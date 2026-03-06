@@ -18,7 +18,7 @@ public class TopicAliasInterceptor implements KafkaInterceptor {
 
     @Override
     public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
-        if (message.apiKey() == ApiKeys.PRODUCE.id) {
+        if (message.apiKey() == ApiKeys.PRODUCE.id || message.apiKey() == ApiKeys.FETCH.id) {
             modifyTopic(message);
         }
         callback.proceed();
@@ -45,8 +45,13 @@ public class TopicAliasInterceptor implements KafkaInterceptor {
 
                     if (virtualToPhysical.containsKey(virtualTopic)) {
                         String physicalTopic = virtualToPhysical.get(virtualTopic);
+                        // NOTE: In-place replacement only works if physical and virtual names have the same length.
+                        // Full re-serialization would be required for different lengths.
                         if (physicalTopic.length() == virtualTopic.length()) {
                             payload.setBytes(topicNameIndex + 2, physicalTopic.getBytes());
+                            System.out.println(String.format("[ALIAS] Remapped %s -> %s", virtualTopic, physicalTopic));
+                        } else {
+                            System.err.println(String.format("[ALIAS] Skipping alias %s -> %s due to length mismatch (In-place replacement requirement)", virtualTopic, physicalTopic));
                         }
                     }
                 }

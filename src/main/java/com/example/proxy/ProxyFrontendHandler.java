@@ -16,20 +16,18 @@ import com.example.proxy.protocol.KafkaMessage;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
-    private final String remoteHost;
-    private final int remotePort;
+    private final KafkaProxy proxy;
 
     // The outbound channel to the backend server
     private volatile Channel outboundChannel;
     private final KafkaInterceptorChain interceptorChain;
 
-    public ProxyFrontendHandler(String remoteHost, int remotePort) {
-        this(remoteHost, remotePort, new KafkaInterceptorChain());
+    public ProxyFrontendHandler(KafkaProxy proxy) {
+        this(proxy, new KafkaInterceptorChain());
     }
 
-    public ProxyFrontendHandler(String remoteHost, int remotePort, KafkaInterceptorChain interceptorChain) {
-        this.remoteHost = remoteHost;
-        this.remotePort = remotePort;
+    public ProxyFrontendHandler(KafkaProxy proxy, KafkaInterceptorChain interceptorChain) {
+        this.proxy = proxy;
         this.interceptorChain = interceptorChain;
     }
 
@@ -46,12 +44,12 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                     protected void initChannel(Channel ch) {
                         ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                         ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
-                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel));
+                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel, interceptorChain));
                     }
                 })
                 .option(ChannelOption.AUTO_READ, false);
 
-        ChannelFuture f = b.connect(remoteHost, remotePort);
+        ChannelFuture f = b.connect(proxy.getRemoteHost(), proxy.getRemotePort());
         outboundChannel = f.channel();
         f.addListener(new ChannelFutureListener() {
             @Override

@@ -6,12 +6,16 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 
+import com.example.proxy.interceptor.KafkaInterceptorChain;
+
 public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
 
     private final Channel inboundChannel;
+    private final KafkaInterceptorChain interceptorChain;
 
-    public ProxyBackendHandler(Channel inboundChannel) {
+    public ProxyBackendHandler(Channel inboundChannel, KafkaInterceptorChain interceptorChain) {
         this.inboundChannel = inboundChannel;
+        this.interceptorChain = interceptorChain;
     }
 
     @Override
@@ -21,6 +25,7 @@ public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
+        interceptorChain.onResponse(ctx, msg);
         inboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
             @Override
             public void operationComplete(ChannelFuture future) {
