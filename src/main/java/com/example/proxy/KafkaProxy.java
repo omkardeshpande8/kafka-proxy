@@ -72,12 +72,17 @@ public class KafkaProxy {
         }
     }
 
+    private static String getEnv(String name, String defaultValue) {
+        String value = System.getenv(name);
+        return value != null ? value : defaultValue;
+    }
+
     public static void main(String[] args) throws Exception {
-        // Default configuration: Listen on 9092, forward to localhost:9093
-        int localPort = 9092;
-        String remoteHost = "localhost";
-        int remotePort = 9093;
-        String configPath = "proxy.properties";
+        // Load configuration from environment variables with defaults
+        int localPort = Integer.parseInt(getEnv("PROXY_PORT", "9092"));
+        String remoteHost = getEnv("BACKEND_HOST", "localhost");
+        int remotePort = Integer.parseInt(getEnv("BACKEND_PORT", "9093"));
+        String configPath = getEnv("CONFIG_PATH", "proxy.properties");
 
         KafkaInterceptorChain chain = ProxyConfig.loadInterceptors(configPath);
 

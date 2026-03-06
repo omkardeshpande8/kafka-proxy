@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-proxy
+  labels:
+    app: kafka-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-proxy
+  template:
+    metadata:
+      labels:
+        app: kafka-proxy
+    spec:
+      containers:
+      - name: kafka-proxy
+        image: kafka-proxy:latest
+        ports:
+        - containerPort: 9092
+        env:
+        - name: PROXY_PORT
+          value: "9092"
+        - name: BACKEND_HOST
+          value: "kafka-service"
+        - name: BACKEND_PORT
+          value: "9093"
+        - name: CONFIG_PATH
+          value: "/config/proxy.properties"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: kafka-proxy-config
