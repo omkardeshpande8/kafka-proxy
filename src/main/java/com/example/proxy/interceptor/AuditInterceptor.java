@@ -7,13 +7,11 @@ import org.apache.kafka.common.protocol.ApiKeys;
 public class AuditInterceptor implements KafkaInterceptor {
 
     @Override
-    public boolean onRequest(ChannelHandlerContext ctx, KafkaMessage message) {
+    public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
         String apiKeyName = "UNKNOWN";
         try {
             apiKeyName = ApiKeys.forId(message.apiKey()).name;
-        } catch (Exception e) {
-            // Ignore
-        }
+        } catch (Exception e) {}
 
         System.out.println(String.format("[AUDIT] Request from %s: API=%s(%d), Version=%d, CorrelationId=%d, ClientId=%s",
                 ctx.channel().remoteAddress(),
@@ -23,11 +21,6 @@ public class AuditInterceptor implements KafkaInterceptor {
                 message.correlationId(),
                 message.clientId()));
 
-        return true;
-    }
-
-    @Override
-    public void onResponse(ChannelHandlerContext ctx, Object response) {
-        // Log responses if needed
+        callback.proceed();
     }
 }

@@ -18,36 +18,26 @@ public class TopicGuardrailInterceptor implements KafkaInterceptor {
     }
 
     @Override
-    public boolean onRequest(ChannelHandlerContext ctx, KafkaMessage message) {
+    public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
         if (message.apiKey() == ApiKeys.PRODUCE.id || message.apiKey() == ApiKeys.FETCH.id) {
             String topic = extractTopic(message);
             if (topic != null) {
                 for (Pattern pattern : blockedTopicPatterns) {
                     if (pattern.matcher(topic).matches()) {
                         System.out.println("[GUARDRAIL] Blocked request for topic: " + topic);
-                        return false;
+                        callback.block();
+                        return;
                     }
                 }
             }
         }
-        return true;
+        callback.proceed();
     }
 
     private String extractTopic(KafkaMessage message) {
-        ByteBuf payload = message.payload();
+        ByteBuf payload = message.body();
         int readerIndex = payload.readerIndex();
         try {
-            // Skip Header (already read by KafkaProtocolHandler, but payload still has it)
-            // Header: apiKey(2), apiVersion(2), correlationId(4), clientIdLen(2), clientId(N)
-            payload.readShort(); // apiKey
-            payload.readShort(); // apiVersion
-            payload.readInt();   // correlationId
-            short clientIdLen = payload.readShort();
-            if (clientIdLen > 0) payload.skipBytes(clientIdLen);
-
-            // Now we are at the request body.
-            // For ProduceRequest:
-            // v0: transactional_id(null), acks(2), timeout(4), topics_array_len(4)
             if (message.apiKey() == ApiKeys.PRODUCE.id) {
                 if (message.apiVersion() >= 3) {
                     short transIdLen = payload.readShort();
@@ -63,16 +53,9 @@ public class TopicGuardrailInterceptor implements KafkaInterceptor {
                     return new String(topicBytes);
                 }
             }
-            // For simplicity, we only implement basic extraction for Produce v0-v2
-        } catch (Exception e) {
-            // Extraction failed
-        } finally {
+        } catch (Exception e) {} finally {
             payload.readerIndex(readerIndex);
         }
         return null;
-    }
-
-    @Override
-    public void onResponse(ChannelHandlerContext ctx, Object response) {
     }
 }

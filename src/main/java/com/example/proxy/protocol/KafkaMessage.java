@@ -4,22 +4,30 @@ import io.netty.buffer.ByteBuf;
 import io.netty.util.ReferenceCounted;
 
 public class KafkaMessage implements ReferenceCounted {
-    private final ByteBuf payload;
+    private final ByteBuf fullMessage;
     private final short apiKey;
     private final short apiVersion;
     private final int correlationId;
     private final String clientId;
+    private final int headerSize;
 
-    public KafkaMessage(ByteBuf payload, short apiKey, short apiVersion, int correlationId, String clientId) {
-        this.payload = payload;
+    public KafkaMessage(ByteBuf fullMessage, short apiKey, short apiVersion, int correlationId, String clientId, int headerSize) {
+        this.fullMessage = fullMessage;
         this.apiKey = apiKey;
         this.apiVersion = apiVersion;
         this.correlationId = correlationId;
         this.clientId = clientId;
+        this.headerSize = headerSize;
     }
 
     public ByteBuf payload() {
-        return payload;
+        // Return the full message starting from the beginning (including header)
+        return fullMessage.setIndex(0, fullMessage.writerIndex());
+    }
+
+    public ByteBuf body() {
+        // Just the body after the header
+        return fullMessage.setIndex(headerSize, fullMessage.writerIndex());
     }
 
     public short apiKey() {
@@ -40,41 +48,41 @@ public class KafkaMessage implements ReferenceCounted {
 
     @Override
     public int refCnt() {
-        return payload.refCnt();
+        return fullMessage.refCnt();
     }
 
     @Override
     public KafkaMessage retain() {
-        payload.retain();
+        fullMessage.retain();
         return this;
     }
 
     @Override
     public KafkaMessage retain(int increment) {
-        payload.retain(increment);
+        fullMessage.retain(increment);
         return this;
     }
 
     @Override
     public KafkaMessage touch() {
-        payload.touch();
+        fullMessage.touch();
         return this;
     }
 
     @Override
     public KafkaMessage touch(Object hint) {
-        payload.touch(hint);
+        fullMessage.touch(hint);
         return this;
     }
 
     @Override
     public boolean release() {
-        return payload.release();
+        return fullMessage.release();
     }
 
     @Override
     public boolean release(int decrement) {
-        return payload.release(decrement);
+        return fullMessage.release(decrement);
     }
 
     @Override

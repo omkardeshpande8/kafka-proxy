@@ -16,20 +16,18 @@ import com.example.proxy.protocol.KafkaMessage;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
-    private final String remoteHost;
-    private final int remotePort;
+    private final KafkaProxy proxy;
 
     // The outbound channel to the backend server
     private volatile Channel outboundChannel;
     private final KafkaInterceptorChain interceptorChain;
 
-    public ProxyFrontendHandler(String remoteHost, int remotePort) {
-        this(remoteHost, remotePort, new KafkaInterceptorChain());
+    public ProxyFrontendHandler(KafkaProxy proxy) {
+        this(proxy, new KafkaInterceptorChain());
     }
 
-    public ProxyFrontendHandler(String remoteHost, int remotePort, KafkaInterceptorChain interceptorChain) {
-        this.remoteHost = remoteHost;
-        this.remotePort = remotePort;
+    public ProxyFrontendHandler(KafkaProxy proxy, KafkaInterceptorChain interceptorChain) {
+        this.proxy = proxy;
         this.interceptorChain = interceptorChain;
     }
 
@@ -46,12 +44,12 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                     protected void initChannel(Channel ch) {
                         ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                         ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
-                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel));
+                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel, interceptorChain));
                     }
                 })
                 .option(ChannelOption.AUTO_READ, false);
 
-        ChannelFuture f = b.connect(remoteHost, remotePort);
+        ChannelFuture f = b.connect(proxy.getRemoteHost(), proxy.getRemotePort());
         outboundChannel = f.channel();
         f.addListener(new ChannelFutureListener() {
             @Override
@@ -69,29 +67,34 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
-        Object forwardMsg = msg;
         if (msg instanceof KafkaMessage) {
             KafkaMessage km = (KafkaMessage) msg;
-            if (!interceptorChain.onRequest(ctx, km)) {
-                // Interceptor blocked the request
-                // For now, close the connection to avoid client hanging
-                km.release();
-                if (outboundChannel != null) {
-                    outboundChannel.close();
+            interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
+                @Override
+                public void proceed() {
+                    forward(ctx, km.payload());
                 }
-                ctx.close();
-                return;
-            }
-            // Unwrap KafkaMessage to ByteBuf for forwarding
-            forwardMsg = km.payload();
-        }
 
+                @Override
+                public void block() {
+                    km.release();
+                    if (outboundChannel != null) {
+                        outboundChannel.close();
+                    }
+                    ctx.close();
+                }
+            });
+        } else {
+            forward(ctx, msg);
+        }
+    }
+
+    private void forward(final ChannelHandlerContext ctx, Object msg) {
         if (outboundChannel.isActive()) {
-            outboundChannel.writeAndFlush(forwardMsg).addListener(new ChannelFutureListener() {
+            outboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) {
                     if (future.isSuccess()) {
-                        // was able to flush out data, start to read the next chunk
                         ctx.channel().read();
                     } else {
                         future.channel().close();
@@ -99,9 +102,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 }
             });
         } else {
-            // Outbound channel not active, release message if needed
-            if (forwardMsg instanceof io.netty.util.ReferenceCounted) {
-                ((io.netty.util.ReferenceCounted) forwardMsg).release();
+            if (msg instanceof io.netty.util.ReferenceCounted) {
+                ((io.netty.util.ReferenceCounted) msg).release();
             }
         }
     }

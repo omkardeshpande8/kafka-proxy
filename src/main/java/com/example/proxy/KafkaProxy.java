@@ -16,8 +16,8 @@ import com.example.proxy.interceptor.KafkaInterceptorChain;
 public class KafkaProxy {
 
     private final int localPort;
-    private final String remoteHost;
-    private final int remotePort;
+    private String remoteHost;
+    private int remotePort;
     private final KafkaInterceptorChain interceptorChain;
 
     public KafkaProxy(int localPort, String remoteHost, int remotePort) {
@@ -31,9 +31,23 @@ public class KafkaProxy {
         this.interceptorChain = interceptorChain;
     }
 
+    public synchronized void failover(String newHost, int newPort) {
+        System.out.println("[FAILOVER] Switching backend to " + newHost + ":" + newPort);
+        this.remoteHost = newHost;
+        this.remotePort = newPort;
+    }
+
+    public synchronized String getRemoteHost() {
+        return remoteHost;
+    }
+
+    public synchronized int getRemotePort() {
+        return remotePort;
+    }
+
     public void run() throws Exception {
         System.out.println(
-                "Starting Kafka Proxy on port " + localPort + " forwarding to " + remoteHost + ":" + remotePort);
+                "Starting Kafka Proxy on port " + localPort + " forwarding to " + getRemoteHost() + ":" + getRemotePort());
 
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
@@ -47,7 +61,7 @@ public class KafkaProxy {
                             ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                             ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
                             ch.pipeline().addLast("protocolHandler", new KafkaProtocolHandler());
-                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(remoteHost, remotePort, interceptorChain));
+                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(KafkaProxy.this, interceptorChain));
                         }
                     })
                     .childOption(ChannelOption.AUTO_READ, false)
