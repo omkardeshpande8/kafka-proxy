@@ -30,9 +30,9 @@ public class InterceptorTest {
 
         chain.addInterceptor(new KafkaInterceptor() {
             @Override
-            public boolean onRequest(ChannelHandlerContext ctx, KafkaMessage message) {
+            public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
                 intercepted.set(true);
-                return false; // Block
+                callback.block();
             }
 
             @Override

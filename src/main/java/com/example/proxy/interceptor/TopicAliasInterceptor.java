@@ -5,36 +5,26 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.kafka.common.protocol.ApiKeys;
 
-import java.util.HashSet;
-import java.util.Set;
-import java.util.regex.Pattern;
+import java.util.HashMap;
+import java.util.Map;
 
-public class TopicGuardrailInterceptor implements KafkaInterceptor {
+public class TopicAliasInterceptor implements KafkaInterceptor {
 
-    private final Set<Pattern> blockedTopicPatterns = new HashSet<>();
+    private final Map<String, String> virtualToPhysical = new HashMap<>();
 
-    public void blockTopic(String pattern) {
-        blockedTopicPatterns.add(Pattern.compile(pattern));
+    public void addAlias(String virtual, String physical) {
+        virtualToPhysical.put(virtual, physical);
     }
 
     @Override
     public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
-        if (message.apiKey() == ApiKeys.PRODUCE.id || message.apiKey() == ApiKeys.FETCH.id) {
-            String topic = extractTopic(message);
-            if (topic != null) {
-                for (Pattern pattern : blockedTopicPatterns) {
-                    if (pattern.matcher(topic).matches()) {
-                        System.out.println("[GUARDRAIL] Blocked request for topic: " + topic);
-                        callback.block();
-                        return;
-                    }
-                }
-            }
+        if (message.apiKey() == ApiKeys.PRODUCE.id) {
+            modifyTopic(message);
         }
         callback.proceed();
     }
 
-    private String extractTopic(KafkaMessage message) {
+    private void modifyTopic(KafkaMessage message) {
         ByteBuf payload = message.body();
         int readerIndex = payload.readerIndex();
         try {
@@ -47,15 +37,22 @@ public class TopicGuardrailInterceptor implements KafkaInterceptor {
                 payload.readInt();   // timeout
                 int topicsLen = payload.readInt();
                 if (topicsLen > 0) {
+                    int topicNameIndex = payload.readerIndex();
                     short topicNameLen = payload.readShort();
                     byte[] topicBytes = new byte[topicNameLen];
                     payload.readBytes(topicBytes);
-                    return new String(topicBytes);
+                    String virtualTopic = new String(topicBytes);
+
+                    if (virtualToPhysical.containsKey(virtualTopic)) {
+                        String physicalTopic = virtualToPhysical.get(virtualTopic);
+                        if (physicalTopic.length() == virtualTopic.length()) {
+                            payload.setBytes(topicNameIndex + 2, physicalTopic.getBytes());
+                        }
+                    }
                 }
             }
         } catch (Exception e) {} finally {
             payload.readerIndex(readerIndex);
         }
-        return null;
     }
 }

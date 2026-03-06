@@ -69,29 +69,34 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
-        Object forwardMsg = msg;
         if (msg instanceof KafkaMessage) {
             KafkaMessage km = (KafkaMessage) msg;
-            if (!interceptorChain.onRequest(ctx, km)) {
-                // Interceptor blocked the request
-                // For now, close the connection to avoid client hanging
-                km.release();
-                if (outboundChannel != null) {
-                    outboundChannel.close();
+            interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
+                @Override
+                public void proceed() {
+                    forward(ctx, km.payload());
                 }
-                ctx.close();
-                return;
-            }
-            // Unwrap KafkaMessage to ByteBuf for forwarding
-            forwardMsg = km.payload();
-        }
 
+                @Override
+                public void block() {
+                    km.release();
+                    if (outboundChannel != null) {
+                        outboundChannel.close();
+                    }
+                    ctx.close();
+                }
+            });
+        } else {
+            forward(ctx, msg);
+        }
+    }
+
+    private void forward(final ChannelHandlerContext ctx, Object msg) {
         if (outboundChannel.isActive()) {
-            outboundChannel.writeAndFlush(forwardMsg).addListener(new ChannelFutureListener() {
+            outboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) {
                     if (future.isSuccess()) {
-                        // was able to flush out data, start to read the next chunk
                         ctx.channel().read();
                     } else {
                         future.channel().close();
@@ -99,9 +104,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 }
             });
         } else {
-            // Outbound channel not active, release message if needed
-            if (forwardMsg instanceof io.netty.util.ReferenceCounted) {
-                ((io.netty.util.ReferenceCounted) forwardMsg).release();
+            if (msg instanceof io.netty.util.ReferenceCounted) {
+                ((io.netty.util.ReferenceCounted) msg).release();
             }
         }
     }
