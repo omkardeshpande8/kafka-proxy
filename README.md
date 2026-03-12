@@ -36,6 +36,12 @@ Eliminate "noisy neighbors" by enforcing bandwidth limits per tenant or cluster.
 - **Large Payload Offloading**: Automatically offload oversized messages to external storage (e.g., local disk) to prevent broker performance degradation.
 - **Fetch Caching**: Reduce broker load by serving repeated Fetch requests directly from the proxy's cache.
 
+## Detailed Architecture Documentation
+
+For a full system design and implementation deep-dive (including architecture and sequence diagrams, component responsibilities, interceptor behavior, and operational constraints), see:
+
+- [`docs/architecture.md`](docs/architecture.md)
+
 ## Configuration
 
 Configuration is managed via the `proxy.properties` file.
