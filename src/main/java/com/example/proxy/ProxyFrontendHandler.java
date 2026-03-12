@@ -14,6 +14,7 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.ssl.SslContext;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
@@ -21,14 +22,20 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     private volatile Channel outboundChannel;
     private volatile KafkaProxy.BackendTarget pinnedBackendTarget;
     private final KafkaInterceptorChain interceptorChain;
+    private final SslContext backendSslContext;
 
     public ProxyFrontendHandler(KafkaProxy proxy) {
-        this(proxy, new KafkaInterceptorChain());
+        this(proxy, new KafkaInterceptorChain(), null);
     }
 
     public ProxyFrontendHandler(KafkaProxy proxy, KafkaInterceptorChain interceptorChain) {
+        this(proxy, interceptorChain, null);
+    }
+
+    public ProxyFrontendHandler(KafkaProxy proxy, KafkaInterceptorChain interceptorChain, SslContext backendSslContext) {
         this.proxy = proxy;
         this.interceptorChain = interceptorChain;
+        this.backendSslContext = backendSslContext;
     }
 
     @Override
@@ -96,6 +103,9 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 .handler(new ChannelInitializer<Channel>() {
                     @Override
                     protected void initChannel(Channel ch) {
+                        if (backendSslContext != null) {
+                            ch.pipeline().addLast("ssl", backendSslContext.newHandler(ch.alloc(), target.host(), target.port()));
+                        }
                         ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                         ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
                         ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel, interceptorChain));
