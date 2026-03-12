@@ -1,33 +1,30 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Configuration
-KAFKA_VERSION="3.6.1"
-SCALA_VERSION="2.13"
-KAFKA_DIR="kafka_${SCALA_VERSION}-${KAFKA_VERSION}"
-KAFKA_BIN="${KAFKA_DIR}/bin"
+# Tunable workload profiles for scale validation.
+# Override by exporting env vars before running this script.
+CORRECTNESS_THREADS="${CORRECTNESS_THREADS:-12}"
+CORRECTNESS_MESSAGES="${CORRECTNESS_MESSAGES:-500}"
+CORRECTNESS_PAYLOAD_BYTES="${CORRECTNESS_PAYLOAD_BYTES:-256}"
 
-# Ensure Kafka is downloaded (simulated, we won't actually download it here)
-# In a real environment, you'd download and extract Kafka.
-# wget https://downloads.apache.org/kafka/${KAFKA_VERSION}/${KAFKA_DIR}.tgz
-# tar -xzf ${KAFKA_DIR}.tgz
+PERF_THREADS="${PERF_THREADS:-16}"
+PERF_MESSAGES="${PERF_MESSAGES:-800}"
+PERF_PAYLOAD_BYTES="${PERF_PAYLOAD_BYTES:-512}"
+PERF_MIN_THROUGHPUT="${PERF_MIN_THROUGHPUT:-0}"
+PERF_MAX_P95_MS="${PERF_MAX_P95_MS:-0}"
 
-# Proxy configuration (via env)
-export PROXY_PORT=9092
-export BACKEND_HOST=localhost
-export BACKEND_PORT=9093
+echo "Starting proxy scale correctness + performance suite..."
+echo "Correctness profile: threads=${CORRECTNESS_THREADS}, messages/thread=${CORRECTNESS_MESSAGES}, payload=${CORRECTNESS_PAYLOAD_BYTES}B"
+echo "Performance profile: threads=${PERF_THREADS}, messages/thread=${PERF_MESSAGES}, payload=${PERF_PAYLOAD_BYTES}B"
 
-echo "Starting Kafka Proxy Performance Test..."
+mvn test -Dtest=ProxyScaleTestSuite \
+  -Dscale.correctness.threads="${CORRECTNESS_THREADS}" \
+  -Dscale.correctness.messages="${CORRECTNESS_MESSAGES}" \
+  -Dscale.correctness.payloadBytes="${CORRECTNESS_PAYLOAD_BYTES}" \
+  -Dscale.perf.threads="${PERF_THREADS}" \
+  -Dscale.perf.messages="${PERF_MESSAGES}" \
+  -Dscale.perf.payloadBytes="${PERF_PAYLOAD_BYTES}" \
+  -Dscale.perf.minThroughput="${PERF_MIN_THROUGHPUT}" \
+  -Dscale.perf.maxP95Ms="${PERF_MAX_P95_MS}"
 
-# Run internal Java performance tests
-mvn test -Dtest=ProxyPerformanceTest
-
-# Example of how you would run Kafka's performance tools:
-# echo "Running Kafka Producer Performance Tool through Proxy..."
-# ${KAFKA_BIN}/kafka-producer-perf-test.sh \
-#   --topic test-topic \
-#   --num-records 100000 \
-#   --record-size 1024 \
-#   --throughput -1 \
-#   --producer-props bootstrap.servers=localhost:9092
-
-echo "Performance Test Completed."
+echo "Scale suite completed successfully."

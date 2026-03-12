@@ -97,3 +97,24 @@ mvn exec:java -Dexec.mainClass="com.example.proxy.KafkaProxy"
 ```bash
 mvn test
 ```
+
+### Scale Correctness + Performance Suite
+Run a dedicated load suite that validates message integrity under concurrency and reports latency/throughput metrics.
+
+```bash
+./scripts/run-perf-tests.sh
+```
+
+Useful overrides for larger runs:
+
+```bash
+CORRECTNESS_THREADS=24 \
+CORRECTNESS_MESSAGES=2000 \
+PERF_THREADS=32 \
+PERF_MESSAGES=4000 \
+PERF_PAYLOAD_BYTES=1024 \
+PERF_MIN_THROUGHPUT=5000 \
+PERF_MAX_P95_MS=20 \
+./scripts/run-perf-tests.sh
+```
+
