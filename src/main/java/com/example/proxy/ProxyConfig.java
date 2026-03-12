@@ -1,6 +1,7 @@
 package com.example.proxy;
 
 import com.example.proxy.interceptor.*;
+import com.example.proxy.security.ProxySecurityConfig;
 
 import java.io.FileInputStream;
 import java.util.Properties;
@@ -79,10 +80,22 @@ public class ProxyConfig {
                 System.out.println("Virtual SQL Filter enabled: " + sqlFilter);
             }
 
+            if (Boolean.parseBoolean(props.getProperty("interceptor.authz.enabled", "false"))) {
+                String defaultAction = props.getProperty("interceptor.authz.default_action", "allow");
+                String rules = props.getProperty("interceptor.authz.rules", "");
+                chain.addInterceptor(AuthorizationInterceptor.fromConfig(defaultAction, rules));
+                System.out.println("Authorization Interceptor enabled (defaultAction=" + defaultAction + ")");
+            }
+
         } catch (Exception e) {
             System.err.println("Could not parse interceptor config from " + configPath + ", using defaults. " + e.getMessage());
         }
         return chain;
+    }
+
+    public static ProxySecurityConfig loadSecurityConfig(String configPath) {
+        Properties props = loadProperties(configPath);
+        return ProxySecurityConfig.load(props);
     }
 
     public static void applyRoutingConfig(KafkaProxy proxy, String configPath) {

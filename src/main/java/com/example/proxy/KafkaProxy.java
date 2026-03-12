@@ -2,6 +2,7 @@ package com.example.proxy;
 
 import com.example.proxy.interceptor.KafkaInterceptorChain;
 import com.example.proxy.protocol.KafkaProtocolHandler;
+import com.example.proxy.security.ProxySecurityConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -12,6 +13,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.ssl.SslContext;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,18 +46,30 @@ public class KafkaProxy {
 
     private final int localPort;
     private final KafkaInterceptorChain interceptorChain;
+    private final SslContext frontendSslContext;
+    private final SslContext backendSslContext;
     private final Map<String, BackendTarget> backends = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<TopicRoutingRule> topicRoutingRules = new CopyOnWriteArrayList<>();
 
     private volatile String defaultBackendName;
 
     public KafkaProxy(int localPort, String remoteHost, int remotePort) {
-        this(localPort, remoteHost, remotePort, new KafkaInterceptorChain());
+        this(localPort, remoteHost, remotePort, new KafkaInterceptorChain(), new ProxySecurityConfig(null, null));
     }
 
     public KafkaProxy(int localPort, String remoteHost, int remotePort, KafkaInterceptorChain interceptorChain) {
+        this(localPort, remoteHost, remotePort, interceptorChain, new ProxySecurityConfig(null, null));
+    }
+
+    public KafkaProxy(int localPort,
+                      String remoteHost,
+                      int remotePort,
+                      KafkaInterceptorChain interceptorChain,
+                      ProxySecurityConfig securityConfig) {
         this.localPort = localPort;
         this.interceptorChain = interceptorChain;
+        this.frontendSslContext = securityConfig.frontendSslContext();
+        this.backendSslContext = securityConfig.backendSslContext();
         registerBackend("default", remoteHost, remotePort);
         this.defaultBackendName = "default";
     }
@@ -142,10 +156,13 @@ public class KafkaProxy {
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         public void initChannel(SocketChannel ch) {
+                            if (frontendSslContext != null) {
+                                ch.pipeline().addLast("ssl", frontendSslContext.newHandler(ch.alloc()));
+                            }
                             ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                             ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
                             ch.pipeline().addLast("protocolHandler", new KafkaProtocolHandler());
-                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(KafkaProxy.this, interceptorChain));
+                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(KafkaProxy.this, interceptorChain, backendSslContext));
                         }
                     })
                     .childOption(ChannelOption.AUTO_READ, false)
@@ -168,7 +185,8 @@ public class KafkaProxy {
         String configPath = getEnv("CONFIG_PATH", "proxy.properties");
 
         KafkaInterceptorChain chain = ProxyConfig.loadInterceptors(configPath);
-        KafkaProxy proxy = new KafkaProxy(localPort, remoteHost, remotePort, chain);
+        ProxySecurityConfig securityConfig = ProxyConfig.loadSecurityConfig(configPath);
+        KafkaProxy proxy = new KafkaProxy(localPort, remoteHost, remotePort, chain, securityConfig);
         ProxyConfig.applyRoutingConfig(proxy, configPath);
 
         proxy.run();
