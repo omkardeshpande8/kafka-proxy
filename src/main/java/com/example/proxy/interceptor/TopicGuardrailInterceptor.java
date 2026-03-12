@@ -1,7 +1,7 @@
 package com.example.proxy.interceptor;
 
 import com.example.proxy.protocol.KafkaMessage;
-import io.netty.buffer.ByteBuf;
+import com.example.proxy.protocol.TopicExtractor;
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.kafka.common.protocol.ApiKeys;
 
@@ -20,7 +20,7 @@ public class TopicGuardrailInterceptor implements KafkaInterceptor {
     @Override
     public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
         if (message.apiKey() == ApiKeys.PRODUCE.id || message.apiKey() == ApiKeys.FETCH.id) {
-            String topic = extractTopic(message);
+            String topic = TopicExtractor.extractTopic(message);
             if (topic != null) {
                 for (Pattern pattern : blockedTopicPatterns) {
                     if (pattern.matcher(topic).matches()) {
@@ -32,30 +32,5 @@ public class TopicGuardrailInterceptor implements KafkaInterceptor {
             }
         }
         callback.proceed();
-    }
-
-    private String extractTopic(KafkaMessage message) {
-        ByteBuf payload = message.body();
-        int readerIndex = payload.readerIndex();
-        try {
-            if (message.apiKey() == ApiKeys.PRODUCE.id) {
-                if (message.apiVersion() >= 3) {
-                    short transIdLen = payload.readShort();
-                    if (transIdLen > 0) payload.skipBytes(transIdLen);
-                }
-                payload.readShort(); // acks
-                payload.readInt();   // timeout
-                int topicsLen = payload.readInt();
-                if (topicsLen > 0) {
-                    short topicNameLen = payload.readShort();
-                    byte[] topicBytes = new byte[topicNameLen];
-                    payload.readBytes(topicBytes);
-                    return new String(topicBytes);
-                }
-            }
-        } catch (Exception e) {} finally {
-            payload.readerIndex(readerIndex);
-        }
-        return null;
     }
 }
