@@ -8,10 +8,8 @@ import java.util.Properties;
 public class ProxyConfig {
     public static KafkaInterceptorChain loadInterceptors(String configPath) {
         KafkaInterceptorChain chain = new KafkaInterceptorChain();
-        Properties props = new Properties();
-        try (FileInputStream in = new FileInputStream(configPath)) {
-            props.load(in);
-
+        Properties props = loadProperties(configPath);
+        try {
             if (Boolean.parseBoolean(props.getProperty("interceptor.audit.enabled", "false"))) {
                 chain.addInterceptor(new AuditInterceptor());
                 System.out.println("Audit Interceptor enabled");
@@ -82,8 +80,66 @@ public class ProxyConfig {
             }
 
         } catch (Exception e) {
-            System.err.println("Could not load config from " + configPath + ", using defaults. " + e.getMessage());
+            System.err.println("Could not parse interceptor config from " + configPath + ", using defaults. " + e.getMessage());
         }
         return chain;
+    }
+
+    public static void applyRoutingConfig(KafkaProxy proxy, String configPath) {
+        Properties props = loadProperties(configPath);
+
+        String backends = props.getProperty("routing.backends", "").trim();
+        if (!backends.isEmpty()) {
+            for (String backendName : backends.split(",")) {
+                String name = backendName.trim();
+                if (name.isEmpty()) {
+                    continue;
+                }
+
+                String host = props.getProperty("routing.backend." + name + ".host");
+                String port = props.getProperty("routing.backend." + name + ".port");
+                if (host == null || port == null) {
+                    System.err.println("[ROUTING] Missing host/port for backend " + name + ", skipping");
+                    continue;
+                }
+
+                proxy.registerBackend(name, host.trim(), Integer.parseInt(port.trim()));
+                System.out.println("[ROUTING] Registered backend " + name + " -> " + host + ":" + port);
+            }
+        }
+
+        String defaultBackend = props.getProperty("routing.default_backend", "").trim();
+        if (!defaultBackend.isEmpty()) {
+            proxy.setDefaultBackend(defaultBackend);
+            System.out.println("[ROUTING] Default backend set to " + defaultBackend);
+        }
+
+        String routes = props.getProperty("routing.topic_routes", "").trim();
+        if (!routes.isEmpty()) {
+            for (String route : routes.split(",")) {
+                String definition = route.trim();
+                if (definition.isEmpty()) {
+                    continue;
+                }
+
+                String[] parts = definition.split("->");
+                if (parts.length != 2) {
+                    System.err.println("[ROUTING] Invalid route definition: " + definition);
+                    continue;
+                }
+
+                proxy.addOrUpdateTopicRoute(parts[0].trim(), parts[1].trim());
+            }
+        }
+    }
+
+    private static Properties loadProperties(String configPath) {
+        Properties props = new Properties();
+        try (FileInputStream in = new FileInputStream(configPath)) {
+            props.load(in);
+        } catch (Exception e) {
+            System.err.println("Could not load config from " + configPath + ", using defaults. " + e.getMessage());
+        }
+        return props;
     }
 }

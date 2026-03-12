@@ -75,7 +75,29 @@ interceptor.offload.threshold_bytes=1048576
 
 # --- Fetch Caching ---
 interceptor.cache.enabled=true
+
+# --- Multi-Region Routing & Selective Failover ---
+routing.backends=region-a,region-b
+routing.backend.region-a.host=kafka-a.internal
+routing.backend.region-a.port=9092
+routing.backend.region-b.host=kafka-b.internal
+routing.backend.region-b.port=9092
+routing.default_backend=region-a
+routing.topic_routes=payments-.*->region-b,critical-.*->region-b
 ```
+
+
+### Multi-Region (Stretch) Deployment + Selective Topic Failover
+Deploy multiple proxy instances across regions behind a global load balancer (active/active or active/passive).
+Each proxy can route topic traffic to different Kafka backends based on regex patterns:
+
+- Define regional backends with `routing.backend.<name>.host` and `.port`.
+- Choose a `routing.default_backend` for normal traffic.
+- Override specific topic families with `routing.topic_routes` (regex -> backend).
+
+This enables per-topic failover without changing client bootstrap settings.
+
+Connection behavior: each client TCP connection is pinned to a single resolved backend region after its first routable request. If later requests on that same connection would resolve to a different region, the proxy closes the connection to avoid cross-region mixing.
 
 ## Getting Started
 

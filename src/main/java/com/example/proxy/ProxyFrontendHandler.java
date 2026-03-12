@@ -1,5 +1,8 @@
 package com.example.proxy;
 
+import com.example.proxy.interceptor.KafkaInterceptorChain;
+import com.example.proxy.protocol.KafkaMessage;
+import com.example.proxy.protocol.TopicExtractor;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -11,15 +14,12 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
-import com.example.proxy.interceptor.KafkaInterceptorChain;
-import com.example.proxy.protocol.KafkaMessage;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     private final KafkaProxy proxy;
-
-    // The outbound channel to the backend server
     private volatile Channel outboundChannel;
+    private volatile KafkaProxy.BackendTarget pinnedBackendTarget;
     private final KafkaInterceptorChain interceptorChain;
 
     public ProxyFrontendHandler(KafkaProxy proxy) {
@@ -33,9 +33,63 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
+        // We defer backend connect until first message so we can route by topic.
+        ctx.channel().read();
+    }
+
+    @Override
+    public void channelRead(final ChannelHandlerContext ctx, Object msg) {
+        if (msg instanceof KafkaMessage) {
+            KafkaMessage km = (KafkaMessage) msg;
+            interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
+                @Override
+                public void proceed() {
+                    ensureConnectedAndForward(ctx, km.payload(), TopicExtractor.extractTopic(km));
+                }
+
+                @Override
+                public void block() {
+                    km.release();
+                    if (outboundChannel != null) {
+                        outboundChannel.close();
+                    }
+                    ctx.close();
+                }
+            });
+        } else {
+            ensureConnectedAndForward(ctx, msg, null);
+        }
+    }
+
+    private void ensureConnectedAndForward(final ChannelHandlerContext ctx, final Object msg, String topic) {
+        KafkaProxy.BackendTarget requestedTarget = proxy.resolveBackend(topic);
+
+        if (pinnedBackendTarget != null && !isSameTarget(pinnedBackendTarget, requestedTarget)) {
+            System.err.println("[ROUTING] Rejecting request because connection is pinned to "
+                    + pinnedBackendTarget + " but topic resolved to " + requestedTarget);
+            if (msg instanceof io.netty.util.ReferenceCounted) {
+                ((io.netty.util.ReferenceCounted) msg).release();
+            }
+            ctx.close();
+            return;
+        }
+
+        if (outboundChannel != null && outboundChannel.isActive()) {
+            forward(ctx, msg);
+            return;
+        }
+
+        connectForTarget(ctx, requestedTarget, new Runnable() {
+            @Override
+            public void run() {
+                forward(ctx, msg);
+            }
+        }, msg);
+    }
+
+    private void connectForTarget(final ChannelHandlerContext ctx, final KafkaProxy.BackendTarget target, final Runnable onConnected, final Object msg) {
         final Channel inboundChannel = ctx.channel();
 
-        // Start the connection attempt.
         Bootstrap b = new Bootstrap();
         b.group(inboundChannel.eventLoop())
                 .channel(ctx.channel().getClass())
@@ -49,48 +103,31 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 })
                 .option(ChannelOption.AUTO_READ, false);
 
-        ChannelFuture f = b.connect(proxy.getRemoteHost(), proxy.getRemotePort());
+        ChannelFuture f = b.connect(target.host(), target.port());
         outboundChannel = f.channel();
         f.addListener(new ChannelFutureListener() {
             @Override
             public void operationComplete(ChannelFuture future) {
                 if (future.isSuccess()) {
-                    // Connection complete start to read first data
-                    inboundChannel.read();
+                    pinnedBackendTarget = target;
+                    onConnected.run();
                 } else {
-                    // Close the connection if the connection attempt has failed.
+                    if (msg instanceof io.netty.util.ReferenceCounted) {
+                        ((io.netty.util.ReferenceCounted) msg).release();
+                    }
                     inboundChannel.close();
                 }
             }
         });
     }
 
-    @Override
-    public void channelRead(final ChannelHandlerContext ctx, Object msg) {
-        if (msg instanceof KafkaMessage) {
-            KafkaMessage km = (KafkaMessage) msg;
-            interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
-                @Override
-                public void proceed() {
-                    forward(ctx, km.payload());
-                }
 
-                @Override
-                public void block() {
-                    km.release();
-                    if (outboundChannel != null) {
-                        outboundChannel.close();
-                    }
-                    ctx.close();
-                }
-            });
-        } else {
-            forward(ctx, msg);
-        }
+    private boolean isSameTarget(KafkaProxy.BackendTarget left, KafkaProxy.BackendTarget right) {
+        return left.host().equals(right.host()) && left.port() == right.port();
     }
 
     private void forward(final ChannelHandlerContext ctx, Object msg) {
-        if (outboundChannel.isActive()) {
+        if (outboundChannel != null && outboundChannel.isActive()) {
             outboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) {
@@ -121,9 +158,6 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         closeOnFlush(ctx.channel());
     }
 
-    /**
-     * Closes the specified channel after all queued write requests are flushed.
-     */
     static void closeOnFlush(Channel ch) {
         if (ch.isActive()) {
             ch.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
