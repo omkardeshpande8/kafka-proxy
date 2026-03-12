@@ -97,6 +97,8 @@ Each proxy can route topic traffic to different Kafka backends based on regex pa
 
 This enables per-topic failover without changing client bootstrap settings.
 
+Connection behavior: each client TCP connection is pinned to a single resolved backend region after its first routable request. If later requests on that same connection would resolve to a different region, the proxy closes the connection to avoid cross-region mixing.
+
 ## Getting Started
 
 ### Prerequisites

@@ -19,6 +19,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     private final KafkaProxy proxy;
     private volatile Channel outboundChannel;
+    private volatile KafkaProxy.BackendTarget pinnedBackendTarget;
     private final KafkaInterceptorChain interceptorChain;
 
     public ProxyFrontendHandler(KafkaProxy proxy) {
@@ -61,12 +62,24 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void ensureConnectedAndForward(final ChannelHandlerContext ctx, final Object msg, String topic) {
+        KafkaProxy.BackendTarget requestedTarget = proxy.resolveBackend(topic);
+
+        if (pinnedBackendTarget != null && !isSameTarget(pinnedBackendTarget, requestedTarget)) {
+            System.err.println("[ROUTING] Rejecting request because connection is pinned to "
+                    + pinnedBackendTarget + " but topic resolved to " + requestedTarget);
+            if (msg instanceof io.netty.util.ReferenceCounted) {
+                ((io.netty.util.ReferenceCounted) msg).release();
+            }
+            ctx.close();
+            return;
+        }
+
         if (outboundChannel != null && outboundChannel.isActive()) {
             forward(ctx, msg);
             return;
         }
 
-        connectForTopic(ctx, topic, new Runnable() {
+        connectForTarget(ctx, requestedTarget, new Runnable() {
             @Override
             public void run() {
                 forward(ctx, msg);
@@ -74,9 +87,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         }, msg);
     }
 
-    private void connectForTopic(final ChannelHandlerContext ctx, String topic, final Runnable onConnected, final Object msg) {
+    private void connectForTarget(final ChannelHandlerContext ctx, final KafkaProxy.BackendTarget target, final Runnable onConnected, final Object msg) {
         final Channel inboundChannel = ctx.channel();
-        final KafkaProxy.BackendTarget target = proxy.resolveBackend(topic);
 
         Bootstrap b = new Bootstrap();
         b.group(inboundChannel.eventLoop())
@@ -97,6 +109,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             @Override
             public void operationComplete(ChannelFuture future) {
                 if (future.isSuccess()) {
+                    pinnedBackendTarget = target;
                     onConnected.run();
                 } else {
                     if (msg instanceof io.netty.util.ReferenceCounted) {
@@ -106,6 +119,11 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 }
             }
         });
+    }
+
+
+    private boolean isSameTarget(KafkaProxy.BackendTarget left, KafkaProxy.BackendTarget right) {
+        return left.host().equals(right.host()) && left.port() == right.port();
     }
 
     private void forward(final ChannelHandlerContext ctx, Object msg) {
