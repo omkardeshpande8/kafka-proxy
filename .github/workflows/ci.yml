@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build-and-test:
+    name: Build & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build, package, and run unit tests
+        run: mvn --batch-mode clean package -Dtest='!**/it/**,!**/perf/**' -DfailIfNoTests=false
+
+      # Upload the shaded fat JAR so other jobs / workflows can download it
+      - name: Upload JAR artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kafka-proxy-jar
+          path: target/*-shaded.jar
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: target/surefire-reports/
+          retention-days: 7
