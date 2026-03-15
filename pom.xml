@@ -5,12 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.mycompany</groupId>
-  <artifactId>hello-world</artifactId>
+  <artifactId>kafka-proxy</artifactId>
   <version>1.0-SNAPSHOT</version>
 
-  <name>hello-world</name>
-  <!-- FIXME change it to the project's website -->
-  <url>http://www.mycompany.com</url>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

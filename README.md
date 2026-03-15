@@ -36,6 +36,24 @@ Eliminate "noisy neighbors" by enforcing bandwidth limits per tenant or cluster.
 - **Large Payload Offloading**: Automatically offload oversized messages to external storage (e.g., local disk) to prevent broker performance degradation.
 - **Fetch Caching**: Reduce broker load by serving repeated Fetch requests directly from the proxy's cache.
 
+### 9. Authentication & Authorization Compatibility
+- **Authentication (all Kafka modes)**:
+  - `PLAINTEXT` (no TLS)
+  - `SSL` / mTLS between clients and proxy
+  - `SASL_PLAINTEXT` pass-through (all broker-supported mechanisms)
+  - `SASL_SSL` pass-through (all broker-supported mechanisms)
+- **SASL mechanism compatibility**: The proxy forwards Kafka protocol bytes unchanged, so mechanisms such as `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`, `GSSAPI`, `OAUTHBEARER`, and custom SASL mechanisms supported by your brokers are transparently supported.
+- **Authorization**:
+  - Native Kafka authorization remains enforced by the backend cluster (ACLs/RBAC/custom authorizers depending on your distribution).
+  - Optional proxy-side authorization interceptor supports allow/deny rules by API, topic regex, client-id regex, and mTLS principal regex.
+
+## Detailed Architecture Documentation
+
+For a full system design and implementation deep-dive (including architecture and sequence diagrams, component responsibilities, interceptor behavior, and operational constraints), see:
+
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/authentication-authorization.md`](docs/authentication-authorization.md)
+
 ## Configuration
 
 Configuration is managed via the `proxy.properties` file.
@@ -69,7 +87,53 @@ interceptor.offload.threshold_bytes=1048576
 
 # --- Fetch Caching ---
 interceptor.cache.enabled=true
+
+# --- Authentication & Transport Security ---
+security.frontend.tls.enabled=false
+security.frontend.tls.keystore.path=/etc/kafka-proxy/frontend-keystore.p12
+security.frontend.tls.keystore.password=changeit
+security.frontend.tls.keystore.type=PKCS12
+security.frontend.tls.mtls.required=false
+security.frontend.tls.truststore.path=/etc/kafka-proxy/frontend-truststore.p12
+security.frontend.tls.truststore.password=changeit
+security.frontend.tls.truststore.type=PKCS12
+
+security.backend.tls.enabled=false
+security.backend.tls.truststore.path=/etc/kafka-proxy/backend-truststore.p12
+security.backend.tls.truststore.password=changeit
+security.backend.tls.truststore.type=PKCS12
+security.backend.tls.client_auth.enabled=false
+security.backend.tls.keystore.path=/etc/kafka-proxy/backend-keystore.p12
+security.backend.tls.keystore.password=changeit
+security.backend.tls.keystore.type=PKCS12
+
+# --- Proxy-side Authorization (optional) ---
+interceptor.authz.enabled=false
+interceptor.authz.default_action=allow
+interceptor.authz.rules=deny:topic=restricted-.*;allow:api=PRODUCE,client=payments-.*
+
+# --- Multi-Region Routing & Selective Failover ---
+routing.backends=region-a,region-b
+routing.backend.region-a.host=kafka-a.internal
+routing.backend.region-a.port=9092
+routing.backend.region-b.host=kafka-b.internal
+routing.backend.region-b.port=9092
+routing.default_backend=region-a
+routing.topic_routes=payments-.*->region-b,critical-.*->region-b
 ```
+
+
+### Multi-Region (Stretch) Deployment + Selective Topic Failover
+Deploy multiple proxy instances across regions behind a global load balancer (active/active or active/passive).
+Each proxy can route topic traffic to different Kafka backends based on regex patterns:
+
+- Define regional backends with `routing.backend.<name>.host` and `.port`.
+- Choose a `routing.default_backend` for normal traffic.
+- Override specific topic families with `routing.topic_routes` (regex -> backend).
+
+This enables per-topic failover without changing client bootstrap settings.
+
+Connection behavior: each client TCP connection is pinned to a single resolved backend region after its first routable request. If later requests on that same connection would resolve to a different region, the proxy closes the connection to avoid cross-region mixing.
 
 ## Getting Started
 
