@@ -15,11 +15,13 @@ import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     private final KafkaProxy proxy;
-    private volatile Channel outboundChannel;
-    private volatile KafkaProxy.BackendTarget pinnedBackendTarget;
+    private final Map<KafkaProxy.BackendTarget, Channel> outboundChannels = new ConcurrentHashMap<>();
     private final KafkaInterceptorChain interceptorChain;
 
     public ProxyFrontendHandler(KafkaProxy proxy) {
@@ -44,15 +46,14 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
                 @Override
                 public void proceed() {
-                    ensureConnectedAndForward(ctx, km.payload(), TopicExtractor.extractTopic(km));
+                    String topic = TopicExtractor.extractTopic(km);
+                    ensureConnectedAndForward(ctx, km.payload(), topic);
                 }
 
                 @Override
                 public void block() {
                     km.release();
-                    if (outboundChannel != null) {
-                        outboundChannel.close();
-                    }
+                    closeAllOutboundConnections();
                     ctx.close();
                 }
             });
@@ -64,25 +65,17 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     private void ensureConnectedAndForward(final ChannelHandlerContext ctx, final Object msg, String topic) {
         KafkaProxy.BackendTarget requestedTarget = proxy.resolveBackend(topic);
 
-        if (pinnedBackendTarget != null && !isSameTarget(pinnedBackendTarget, requestedTarget)) {
-            System.err.println("[ROUTING] Rejecting request because connection is pinned to "
-                    + pinnedBackendTarget + " but topic resolved to " + requestedTarget);
-            if (msg instanceof io.netty.util.ReferenceCounted) {
-                ((io.netty.util.ReferenceCounted) msg).release();
-            }
-            ctx.close();
-            return;
-        }
-
-        if (outboundChannel != null && outboundChannel.isActive()) {
-            forward(ctx, msg);
+        Channel channel = outboundChannels.get(requestedTarget);
+        if (channel != null && channel.isActive()) {
+            forward(ctx, channel, msg);
             return;
         }
 
         connectForTarget(ctx, requestedTarget, new Runnable() {
             @Override
             public void run() {
-                forward(ctx, msg);
+                Channel newChannel = outboundChannels.get(requestedTarget);
+                forward(ctx, newChannel, msg);
             }
         }, msg);
     }
@@ -104,12 +97,11 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 .option(ChannelOption.AUTO_READ, false);
 
         ChannelFuture f = b.connect(target.host(), target.port());
-        outboundChannel = f.channel();
         f.addListener(new ChannelFutureListener() {
             @Override
             public void operationComplete(ChannelFuture future) {
                 if (future.isSuccess()) {
-                    pinnedBackendTarget = target;
+                    outboundChannels.put(target, future.channel());
                     onConnected.run();
                 } else {
                     if (msg instanceof io.netty.util.ReferenceCounted) {
@@ -121,14 +113,9 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         });
     }
 
-
-    private boolean isSameTarget(KafkaProxy.BackendTarget left, KafkaProxy.BackendTarget right) {
-        return left.host().equals(right.host()) && left.port() == right.port();
-    }
-
-    private void forward(final ChannelHandlerContext ctx, Object msg) {
-        if (outboundChannel != null && outboundChannel.isActive()) {
-            outboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
+    private void forward(final ChannelHandlerContext ctx, Channel channel, Object msg) {
+        if (channel != null && channel.isActive()) {
+            channel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
                 @Override
                 public void operationComplete(ChannelFuture future) {
                     if (future.isSuccess()) {
@@ -147,15 +134,22 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
-        if (outboundChannel != null) {
-            closeOnFlush(outboundChannel);
-        }
+        closeAllOutboundConnections();
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         cause.printStackTrace();
         closeOnFlush(ctx.channel());
+    }
+
+    private void closeAllOutboundConnections() {
+        for (Channel ch : outboundChannels.values()) {
+            if (ch != null) {
+                closeOnFlush(ch);
+            }
+        }
+        outboundChannels.clear();
     }
 
     static void closeOnFlush(Channel ch) {
