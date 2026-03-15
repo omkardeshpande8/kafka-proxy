@@ -104,7 +104,12 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                     @Override
                     protected void initChannel(Channel ch) {
                         if (backendSslContext != null) {
-                            ch.pipeline().addLast("ssl", backendSslContext.newHandler(ch.alloc(), target.host(), target.port()));
+                            io.netty.handler.ssl.SslHandler sslHandler = backendSslContext.newHandler(ch.alloc(), target.host(), target.port());
+                            javax.net.ssl.SSLEngine engine = sslHandler.engine();
+                            javax.net.ssl.SSLParameters params = engine.getSSLParameters();
+                            params.setEndpointIdentificationAlgorithm("HTTPS");
+                            engine.setSSLParameters(params);
+                            ch.pipeline().addLast("ssl", sslHandler);
                         }
                         ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                         ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));

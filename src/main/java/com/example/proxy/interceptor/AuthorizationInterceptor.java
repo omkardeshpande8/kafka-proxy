@@ -146,7 +146,7 @@ public class AuthorizationInterceptor implements KafkaInterceptor {
             List<String> apis = new ArrayList<>();
 
             String predicates = trimmed.substring(idx + 1);
-            for (String fragment : predicates.split(",")) {
+            for (String fragment : predicates.split(",(?=\\s*(?i)(?:topic|client|client_id|principal|api)\\s*=)")) {
                 String part = fragment.trim();
                 if (part.isEmpty()) {
                     continue;

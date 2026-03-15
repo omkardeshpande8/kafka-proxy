@@ -75,4 +75,18 @@ public class AuthorizationInterceptorTest {
         assertFalse(blocked.get());
         message.release();
     }
+
+    @Test
+    public void parsesPrincipalWithCommas() {
+        List<AuthorizationInterceptor.Rule> rules = AuthorizationInterceptor.parseRules(
+                "allow:principal=CN=svc,OU=team,O=org,api=PRODUCE"
+        );
+
+        assertEquals(1, rules.size());
+        
+        KafkaMessage message = new KafkaMessage(Unpooled.buffer(0), (short) 0, (short) 2, 0, "client", 0);
+        assertTrue(rules.get(0).matches(message, "topic", "CN=svc,OU=team,O=org"));
+        assertFalse(rules.get(0).matches(message, "topic", "CN=other"));
+        message.release();
+    }
 }
