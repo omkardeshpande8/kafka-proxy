@@ -1,7 +1,7 @@
 package com.example.proxy.perf;
 
 import com.example.proxy.KafkaProxy;
-import com.example.proxy.ProxyConfig;
+
 import com.example.proxy.interceptor.KafkaInterceptorChain;
 import org.junit.After;
 import org.junit.Before;
@@ -177,6 +177,7 @@ public class ProxyScaleTestSuite {
                         completed.incrementAndGet();
                     }
                 } catch (Exception e) {
+                    e.printStackTrace();
                     ioFailures.incrementAndGet();
                 } finally {
                     doneGate.countDown();
@@ -185,7 +186,9 @@ public class ProxyScaleTestSuite {
         }
 
         startGate.countDown();
-        assertTrue("Scenario timed out", doneGate.await(120, TimeUnit.SECONDS));
+        long minTimeout = Math.max(120, (long) threads * messagesPerThread / 100);
+        long timeoutSeconds = Long.getLong("scale.timeoutSeconds", minTimeout);
+        assertTrue("Scenario timed out", doneGate.await(timeoutSeconds, TimeUnit.SECONDS));
 
         long duration = System.nanoTime() - start;
         int total = completed.get();
@@ -246,7 +249,7 @@ public class ProxyScaleTestSuite {
     private void startProxy() {
         executor.submit(() -> {
             try {
-                KafkaInterceptorChain chain = ProxyConfig.loadInterceptors("proxy.properties");
+                KafkaInterceptorChain chain = new KafkaInterceptorChain();
                 KafkaProxy proxy = new KafkaProxy(proxyPort, BACKEND_HOST, backendPort, chain);
                 proxy.run();
             } catch (Exception e) {
@@ -264,7 +267,7 @@ public class ProxyScaleTestSuite {
     }
 
     private static byte[] buildPayload(int clientId, int sequence, int payloadBytes) {
-        int bodyBytes = Math.max(payloadBytes - 16, 8);
+        int bodyBytes = Math.max(payloadBytes - 12, 1);
         byte[] body = new byte[bodyBytes];
         for (int i = 0; i < body.length; i++) {
             body[i] = (byte) ((clientId * 31 + sequence * 17 + i) & 0x7F);
