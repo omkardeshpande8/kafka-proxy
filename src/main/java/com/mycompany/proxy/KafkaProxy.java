@@ -15,9 +15,15 @@ import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.ssl.SslContext;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
 
 public class KafkaProxy {
 
@@ -50,6 +56,7 @@ public class KafkaProxy {
     private final SslContext backendSslContext;
     private final Map<String, BackendTarget> backends = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<TopicRoutingRule> topicRoutingRules = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<GroupRoutingRule> groupRoutingRules = new CopyOnWriteArrayList<>();
 
     private volatile String defaultBackendName;
 
@@ -103,20 +110,52 @@ public class KafkaProxy {
         for (TopicRoutingRule rule : topicRoutingRules) {
             if (rule.rawPattern().equals(topicRegex)) {
                 rule.setBackendName(backendName);
-                System.out.println("[ROUTING] Updated route " + topicRegex + " -> " + backendName);
+                System.out.println("[ROUTING] Updated topic route " + topicRegex + " -> " + backendName);
                 return;
             }
         }
 
         topicRoutingRules.add(new TopicRoutingRule(topicRegex, backendName));
-        System.out.println("[ROUTING] Added route " + topicRegex + " -> " + backendName);
+        System.out.println("[ROUTING] Added topic route " + topicRegex + " -> " + backendName);
+    }
+
+    public synchronized void addOrUpdateGroupRoute(String groupRegex, String backendName) {
+        if (!backends.containsKey(backendName)) {
+            throw new IllegalArgumentException("Unknown backend for route: " + backendName);
+        }
+
+        for (GroupRoutingRule rule : groupRoutingRules) {
+            if (rule.rawPattern().equals(groupRegex)) {
+                rule.setBackendName(backendName);
+                System.out.println("[ROUTING] Updated group route " + groupRegex + " -> " + backendName);
+                return;
+            }
+        }
+
+        groupRoutingRules.add(new GroupRoutingRule(groupRegex, backendName));
+        System.out.println("[ROUTING] Added group route " + groupRegex + " -> " + backendName);
     }
 
     public synchronized void clearTopicRoutes() {
         topicRoutingRules.clear();
     }
 
-    public BackendTarget resolveBackend(String topic) {
+    public synchronized void clearGroupRoutes() {
+        groupRoutingRules.clear();
+    }
+
+    public BackendTarget resolveBackend(String topic, String groupId) {
+        if (groupId != null) {
+            for (GroupRoutingRule rule : groupRoutingRules) {
+                if (rule.matches(groupId)) {
+                    BackendTarget routeTarget = backends.get(rule.backendName());
+                    if (routeTarget != null) {
+                        return routeTarget;
+                    }
+                }
+            }
+        }
+
         if (topic != null) {
             for (TopicRoutingRule rule : topicRoutingRules) {
                 if (rule.matches(topic)) {
@@ -136,16 +175,17 @@ public class KafkaProxy {
     }
 
     public synchronized String getRemoteHost() {
-        return resolveBackend(null).host();
+        return resolveBackend(null, null).host();
     }
 
     public synchronized int getRemotePort() {
-        return resolveBackend(null).port();
+        return resolveBackend(null, null).port();
     }
 
     public void run() throws Exception {
+        startHealthCheckServer();
         System.out.println(
-                "Starting Kafka Proxy on port " + localPort + " with default backend " + resolveBackend(null));
+                "Starting Kafka Proxy on port " + localPort + " with default backend " + resolveBackend(null, null));
 
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
@@ -176,6 +216,56 @@ public class KafkaProxy {
     private static String getEnv(String name, String defaultValue) {
         String value = System.getenv(name);
         return value != null ? value : defaultValue;
+    }
+
+    private void startHealthCheckServer() {
+        try {
+            int healthPort = Integer.parseInt(getEnv("HEALTH_PORT", "8080"));
+            HttpServer server = HttpServer.create(new InetSocketAddress(healthPort), 0);
+            server.createContext("/health", new HttpHandler() {
+                @Override
+                public void handle(HttpExchange exchange) throws IOException {
+                    String response = "OK";
+                    exchange.sendResponseHeaders(200, response.length());
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                }
+            });
+            server.setExecutor(null);
+            server.start();
+            System.out.println("[HEALTH] Health check server started on port " + healthPort);
+        } catch (Exception e) {
+            System.err.println("[HEALTH] Failed to start health check server: " + e.getMessage());
+        }
+    }
+
+    static class GroupRoutingRule {
+        private final String pattern;
+        private final java.util.regex.Pattern regex;
+        private String backendName;
+
+        GroupRoutingRule(String pattern, String backendName) {
+            this.pattern = pattern;
+            this.regex = java.util.regex.Pattern.compile(pattern);
+            this.backendName = backendName;
+        }
+
+        String rawPattern() {
+            return pattern;
+        }
+
+        boolean matches(String groupId) {
+            return regex.matcher(groupId).matches();
+        }
+
+        String backendName() {
+            return backendName;
+        }
+
+        void setBackendName(String backendName) {
+            this.backendName = backendName;
+        }
     }
 
     public static void main(String[] args) throws Exception {
