@@ -17,6 +17,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.ssl.SslContext;
+import org.apache.kafka.common.protocol.ApiKeys;
 
 import java.util.Map;
 import java.util.Queue;
@@ -57,7 +58,10 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof KafkaMessage) {
             final KafkaMessage km = (KafkaMessage) msg;
-            expectedCorrelationIds.add(km.correlationId());
+            final boolean expectsResponse = expectsResponse(km);
+            if (expectsResponse) {
+                expectedCorrelationIds.add(km.correlationId());
+            }
 
             interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
                 @Override
@@ -69,7 +73,9 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
                 @Override
                 public void block() {
-                    expectedCorrelationIds.remove(km.correlationId());
+                    if (expectsResponse) {
+                        expectedCorrelationIds.remove(km.correlationId());
+                    }
                     km.release();
                     closeAllOutboundConnections();
                     ctx.close();
@@ -121,6 +127,34 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             } else {
                 break;
             }
+        }
+    }
+
+    private boolean expectsResponse(KafkaMessage message) {
+        if (message.apiKey() != ApiKeys.PRODUCE.id) {
+            return true;
+        }
+
+        ByteBuf body = message.body();
+        int readerIndex = body.readerIndex();
+        try {
+            // ProduceRequest v3+ starts with nullable transactional_id before required_acks.
+            if (message.apiVersion() >= 3) {
+                short transactionalIdLength = body.readShort();
+                if (transactionalIdLength > 0) {
+                    body.skipBytes(transactionalIdLength);
+                } else if (transactionalIdLength < -1) {
+                    return true;
+                }
+            }
+
+            short requiredAcks = body.readShort();
+            return requiredAcks != 0;
+        } catch (Exception ignored) {
+            // On parse failure, keep conservative behavior and preserve ordering.
+            return true;
+        } finally {
+            body.readerIndex(readerIndex);
         }
     }
 
@@ -220,6 +254,13 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             }
         }
         outboundChannels.clear();
+    }
+
+    public synchronized void handleBackendDisconnect(ChannelHandlerContext frontendCtx, Channel backendChannel) {
+        outboundChannels.entrySet().removeIf(entry -> entry.getValue() == backendChannel);
+        expectedCorrelationIds.clear();
+        pendingResponses.clear();
+        closeOnFlush(frontendCtx.channel());
     }
 
     static void closeOnFlush(Channel ch) {

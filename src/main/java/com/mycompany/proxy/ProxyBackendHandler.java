@@ -33,9 +33,7 @@ public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
-        // We don't necessarily close frontend if one backend goes down,
-        // but for now let's keep it simple.
-        // ProxyFrontendHandler.closeOnFlush(frontendCtx.channel());
+        frontendHandler.handleBackendDisconnect(frontendCtx, ctx.channel());
     }
 
     @Override
