@@ -1,9 +1,11 @@
 package com.mycompany.proxy;
 
 import com.mycompany.proxy.interceptor.KafkaInterceptorChain;
+import com.mycompany.proxy.protocol.GroupIdExtractor;
 import com.mycompany.proxy.protocol.KafkaMessage;
 import com.mycompany.proxy.protocol.TopicExtractor;
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -15,9 +17,12 @@ import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.ssl.SslContext;
+import org.apache.kafka.common.protocol.ApiKeys;
 
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
@@ -25,6 +30,10 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     private final Map<KafkaProxy.BackendTarget, Channel> outboundChannels = new ConcurrentHashMap<>();
     private final KafkaInterceptorChain interceptorChain;
     private final SslContext backendSslContext;
+
+    // For response ordering
+    private final Queue<Integer> expectedCorrelationIds = new ConcurrentLinkedQueue<>();
+    private final Map<Integer, Object> pendingResponses = new ConcurrentHashMap<>();
 
     public ProxyFrontendHandler(KafkaProxy proxy) {
         this(proxy, new KafkaInterceptorChain(), null);
@@ -42,35 +51,115 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) {
-        // We defer backend connect until first message so we can route by topic.
         ctx.channel().read();
     }
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof KafkaMessage) {
-            KafkaMessage km = (KafkaMessage) msg;
+            final KafkaMessage km = (KafkaMessage) msg;
+            final boolean expectsResponse = expectsResponse(km);
+            if (expectsResponse) {
+                expectedCorrelationIds.add(km.correlationId());
+            }
+
             interceptorChain.onRequest(ctx, km, new KafkaInterceptorChain.Callback() {
                 @Override
                 public void proceed() {
                     String topic = TopicExtractor.extractTopic(km);
-                    ensureConnectedAndForward(ctx, km.payload(), topic);
+                    String groupId = GroupIdExtractor.extractGroupId(km);
+                    ensureConnectedAndForward(ctx, km.payload(), topic, groupId);
                 }
 
                 @Override
                 public void block() {
+                    if (expectsResponse) {
+                        expectedCorrelationIds.remove(km.correlationId());
+                    }
                     km.release();
                     closeAllOutboundConnections();
                     ctx.close();
                 }
             });
         } else {
-            ensureConnectedAndForward(ctx, msg, null);
+            ensureConnectedAndForward(ctx, msg, null, null);
         }
     }
 
-    private void ensureConnectedAndForward(final ChannelHandlerContext ctx, final Object msg, String topic) {
-        KafkaProxy.BackendTarget requestedTarget = proxy.resolveBackend(topic);
+    public void handleBackendResponse(ChannelHandlerContext frontendCtx, Object msg) {
+        if (msg instanceof ByteBuf) {
+            ByteBuf buf = (ByteBuf) msg;
+            if (buf.readableBytes() >= 4) {
+                int correlationId = buf.getInt(buf.readerIndex());
+                pendingResponses.put(correlationId, msg);
+                flushResponses(frontendCtx);
+                return;
+            }
+        }
+        // Fallback for non-ByteBuf or too short messages
+        frontendCtx.writeAndFlush(msg).addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) {
+                if (future.isSuccess()) {
+                    // We don't have a backend context here to call read(),
+                    // but ProxyBackendHandler will call it.
+                } else {
+                    future.channel().close();
+                }
+            }
+        });
+    }
+
+    private synchronized void flushResponses(ChannelHandlerContext frontendCtx) {
+        while (!expectedCorrelationIds.isEmpty()) {
+            Integer nextId = expectedCorrelationIds.peek();
+            if (pendingResponses.containsKey(nextId)) {
+                expectedCorrelationIds.poll();
+                Object response = pendingResponses.remove(nextId);
+                frontendCtx.writeAndFlush(response).addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture future) {
+                        if (!future.isSuccess()) {
+                            future.channel().close();
+                        }
+                    }
+                });
+            } else {
+                break;
+            }
+        }
+    }
+
+    private boolean expectsResponse(KafkaMessage message) {
+        if (message.apiKey() != ApiKeys.PRODUCE.id) {
+            return true;
+        }
+
+        ByteBuf body = message.body();
+        int readerIndex = body.readerIndex();
+        try {
+            // ProduceRequest v3+ starts with nullable transactional_id before required_acks.
+            if (message.apiVersion() >= 3) {
+                short transactionalIdLength = body.readShort();
+                if (transactionalIdLength > 0) {
+                    body.skipBytes(transactionalIdLength);
+                } else if (transactionalIdLength < -1) {
+                    return true;
+                }
+            }
+
+            short requiredAcks = body.readShort();
+            return requiredAcks != 0;
+        } catch (Exception ignored) {
+            // On parse failure, keep conservative behavior and preserve ordering.
+            return true;
+        } finally {
+            body.readerIndex(readerIndex);
+        }
+    }
+
+    private void ensureConnectedAndForward(final ChannelHandlerContext ctx, final Object msg, String topic, String groupId) {
+        KafkaProxy.BackendTarget requestedTarget = proxy.resolveBackend(topic, groupId);
 
         Channel channel = outboundChannels.get(requestedTarget);
         if (channel != null && channel.isActive()) {
@@ -106,7 +195,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                         }
                         ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                         ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
-                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(inboundChannel, interceptorChain));
+                        ch.pipeline().addLast("backendHandler", new ProxyBackendHandler(ProxyFrontendHandler.this, ctx, interceptorChain));
                     }
                 })
                 .option(ChannelOption.AUTO_READ, false);
@@ -165,6 +254,13 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             }
         }
         outboundChannels.clear();
+    }
+
+    public synchronized void handleBackendDisconnect(ChannelHandlerContext frontendCtx, Channel backendChannel) {
+        outboundChannels.entrySet().removeIf(entry -> entry.getValue() == backendChannel);
+        expectedCorrelationIds.clear();
+        pendingResponses.clear();
+        closeOnFlush(frontendCtx.channel());
     }
 
     static void closeOnFlush(Channel ch) {

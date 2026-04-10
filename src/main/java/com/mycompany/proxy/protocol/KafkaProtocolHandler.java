@@ -25,9 +25,10 @@ public class KafkaProtocolHandler extends MessageToMessageDecoder<ByteBuf> {
             try {
                 // Use Kafka's RequestHeader for robust decoding
                 ByteBuffer nioBuffer = msg.nioBuffer();
+                int initialPos = nioBuffer.position();
                 RequestHeader header = RequestHeader.parse(nioBuffer);
 
-                int headerSize = nioBuffer.position();
+                int headerSize = nioBuffer.position() - initialPos;
                 // We must NOT slice and retain separately if we want to modify the original payload in-place
                 // Instead, let's keep the full message in KafkaMessage
 

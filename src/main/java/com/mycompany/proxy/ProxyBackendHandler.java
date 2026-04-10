@@ -1,6 +1,5 @@
 package com.mycompany.proxy;
 
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -10,11 +9,13 @@ import com.mycompany.proxy.interceptor.KafkaInterceptorChain;
 
 public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
 
-    private final Channel inboundChannel;
+    private final ProxyFrontendHandler frontendHandler;
+    private final ChannelHandlerContext frontendCtx;
     private final KafkaInterceptorChain interceptorChain;
 
-    public ProxyBackendHandler(Channel inboundChannel, KafkaInterceptorChain interceptorChain) {
-        this.inboundChannel = inboundChannel;
+    public ProxyBackendHandler(ProxyFrontendHandler frontendHandler, ChannelHandlerContext frontendCtx, KafkaInterceptorChain interceptorChain) {
+        this.frontendHandler = frontendHandler;
+        this.frontendCtx = frontendCtx;
         this.interceptorChain = interceptorChain;
     }
 
@@ -25,22 +26,14 @@ public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
-        interceptorChain.onResponse(ctx, msg);
-        inboundChannel.writeAndFlush(msg).addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture future) {
-                if (future.isSuccess()) {
-                    ctx.channel().read();
-                } else {
-                    future.channel().close();
-                }
-            }
-        });
+        interceptorChain.onResponse(frontendCtx, msg);
+        frontendHandler.handleBackendResponse(frontendCtx, msg);
+        ctx.read();
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
-        ProxyFrontendHandler.closeOnFlush(inboundChannel);
+        frontendHandler.handleBackendDisconnect(frontendCtx, ctx.channel());
     }
 
     @Override

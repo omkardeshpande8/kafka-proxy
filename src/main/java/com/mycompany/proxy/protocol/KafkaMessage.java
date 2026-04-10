@@ -4,12 +4,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.util.ReferenceCounted;
 
 public class KafkaMessage implements ReferenceCounted {
-    private final ByteBuf fullMessage;
+    private ByteBuf fullMessage;
     private final short apiKey;
     private final short apiVersion;
     private final int correlationId;
     private final String clientId;
-    private final int headerSize;
+    private int headerSize;
 
     public KafkaMessage(ByteBuf fullMessage, short apiKey, short apiVersion, int correlationId, String clientId, int headerSize) {
         this.fullMessage = fullMessage;
@@ -20,14 +20,27 @@ public class KafkaMessage implements ReferenceCounted {
         this.headerSize = headerSize;
     }
 
+    public void replacePayload(ByteBuf newFullMessage, int newHeaderSize) {
+        if (this.fullMessage != null) {
+            this.fullMessage.release();
+        }
+        this.fullMessage = newFullMessage;
+        this.headerSize = newHeaderSize;
+    }
+
     public ByteBuf payload() {
-        // Return the full message starting from the beginning (including header)
-        return fullMessage.setIndex(0, fullMessage.writerIndex());
+        // Return the full message as a slice starting at 0
+        return fullMessage.slice(0, fullMessage.writerIndex());
     }
 
     public ByteBuf body() {
-        // Just the body after the header
-        return fullMessage.setIndex(headerSize, fullMessage.writerIndex());
+        // Return the body as a slice
+        int bodyLength = Math.max(0, fullMessage.writerIndex() - headerSize);
+        return fullMessage.slice(headerSize, bodyLength);
+    }
+
+    public int headerSize() {
+        return headerSize;
     }
 
     public short apiKey() {
