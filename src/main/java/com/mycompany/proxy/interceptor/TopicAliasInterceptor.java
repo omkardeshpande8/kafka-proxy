@@ -12,11 +12,15 @@ import org.apache.kafka.common.requests.FetchRequest;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.RequestHeader;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
 public class TopicAliasInterceptor implements KafkaInterceptor {
+    private static final Logger logger = LoggerFactory.getLogger(TopicAliasInterceptor.class);
 
     private final Map<String, String> virtualToPhysical = new HashMap<>();
 
@@ -36,7 +40,8 @@ public class TopicAliasInterceptor implements KafkaInterceptor {
         try {
             ApiKeys apiKey = ApiKeys.forId(message.apiKey());
             ByteBuffer bodyBuffer = message.body().nioBuffer();
-            AbstractRequest request = AbstractRequest.parseRequest(apiKey, message.apiVersion(), bodyBuffer).request;
+            // Duplicate to avoid position side-effects if needed, though parseRequest should be fine
+            AbstractRequest request = AbstractRequest.parseRequest(apiKey, message.apiVersion(), bodyBuffer.duplicate()).request;
 
             boolean modified = false;
             if (request instanceof ProduceRequest) {
@@ -65,13 +70,17 @@ public class TopicAliasInterceptor implements KafkaInterceptor {
                 RequestHeader header = RequestHeader.parse(payloadBuffer);
 
                 ByteBuffer newFullBuffer = request.serializeWithHeader(header);
+                if (newFullBuffer.remaining() > Integer.MAX_VALUE - 4) {
+                    throw new IllegalStateException("Serialized request too large: " + newFullBuffer.remaining());
+                }
+
                 ByteBuf newPayload = Unpooled.wrappedBuffer(newFullBuffer);
 
                 message.replacePayload(newPayload, header.size());
-                System.out.println("[ALIAS] Remapped topics in " + apiKey + " (" + message.clientId() + ")");
+                logger.info("[ALIAS] Remapped topics in {} ({})", apiKey, message.clientId());
             }
         } catch (Exception e) {
-            System.err.println("[ALIAS] Warning: Failed to remap topic: " + e.getMessage());
+            logger.warn("[ALIAS] Failed to remap topic: {}", e.getMessage(), e);
         }
     }
 }

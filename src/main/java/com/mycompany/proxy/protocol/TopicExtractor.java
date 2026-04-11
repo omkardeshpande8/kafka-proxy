@@ -2,6 +2,9 @@ package com.mycompany.proxy.protocol;
 
 import io.netty.buffer.ByteBuf;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.requests.AbstractRequest;
+import org.apache.kafka.common.requests.ProduceRequest;
+import org.apache.kafka.common.requests.FetchRequest;
 
 import java.nio.charset.StandardCharsets;
 
@@ -11,85 +14,24 @@ public final class TopicExtractor {
     }
 
     public static String extractTopic(KafkaMessage message) {
-        if (message.apiKey() == ApiKeys.PRODUCE.id) {
-            return extractProduceTopic(message);
-        }
-
-        if (message.apiKey() == ApiKeys.FETCH.id) {
-            return extractFetchTopic(message);
+        try {
+            if (message.apiKey() == ApiKeys.PRODUCE.id) {
+                ProduceRequest req = (ProduceRequest) AbstractRequest.parseRequest(
+                        ApiKeys.PRODUCE, message.apiVersion(), message.body().nioBuffer()).request;
+                if (!req.data().topicData().isEmpty()) {
+                    return req.data().topicData().iterator().next().name();
+                }
+            } else if (message.apiKey() == ApiKeys.FETCH.id) {
+                FetchRequest req = (FetchRequest) AbstractRequest.parseRequest(
+                        ApiKeys.FETCH, message.apiVersion(), message.body().nioBuffer()).request;
+                if (!req.data().topics().isEmpty()) {
+                    return req.data().topics().iterator().next().topic();
+                }
+            }
+        } catch (Exception e) {
+            // Log and fallback? For extraction we return null if failed
         }
 
         return null;
-    }
-
-    private static String extractProduceTopic(KafkaMessage message) {
-        ByteBuf payload = message.body();
-        int readerIndex = payload.readerIndex();
-        try {
-            if (message.apiVersion() >= 3) {
-                short transIdLen = payload.readShort();
-                if (transIdLen > 0) {
-                    payload.skipBytes(transIdLen);
-                }
-            }
-            payload.readShort();
-            payload.readInt();
-            int topicsLen = payload.readInt();
-            if (topicsLen <= 0) {
-                return null;
-            }
-            return readTopic(payload);
-        } catch (Exception e) {
-            return null;
-        } finally {
-            payload.readerIndex(readerIndex);
-        }
-    }
-
-    private static String extractFetchTopic(KafkaMessage message) {
-        ByteBuf payload = message.body();
-        int readerIndex = payload.readerIndex();
-        try {
-            payload.readInt();
-            payload.readInt();
-            payload.readInt();
-
-            if (message.apiVersion() >= 3) {
-                payload.readInt();
-            }
-            if (message.apiVersion() >= 4) {
-                payload.readByte();
-            }
-            if (message.apiVersion() >= 7) {
-                payload.readInt();
-                payload.readInt();
-            }
-            if (message.apiVersion() >= 11) {
-                short rackIdLength = payload.readShort();
-                if (rackIdLength > 0) {
-                    payload.skipBytes(rackIdLength);
-                }
-            }
-
-            int topicsLen = payload.readInt();
-            if (topicsLen <= 0) {
-                return null;
-            }
-            return readTopic(payload);
-        } catch (Exception e) {
-            return null;
-        } finally {
-            payload.readerIndex(readerIndex);
-        }
-    }
-
-    private static String readTopic(ByteBuf payload) {
-        short topicNameLen = payload.readShort();
-        if (topicNameLen < 0 || payload.readableBytes() < topicNameLen) {
-            return null;
-        }
-        byte[] topicBytes = new byte[topicNameLen];
-        payload.readBytes(topicBytes);
-        return new String(topicBytes, StandardCharsets.UTF_8);
     }
 }

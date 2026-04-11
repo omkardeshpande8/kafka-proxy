@@ -1,20 +1,25 @@
 package com.mycompany.proxy.interceptor;
 
 import com.mycompany.proxy.protocol.KafkaMessage;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.requests.AbstractRequest;
+import org.apache.kafka.common.requests.ProduceRequest;
+import org.apache.kafka.common.record.Record;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 
 public class JsonValidationInterceptor implements KafkaInterceptor {
+    private static final Logger logger = LoggerFactory.getLogger(JsonValidationInterceptor.class);
 
     @Override
     public void onRequest(ChannelHandlerContext ctx, KafkaMessage message, KafkaInterceptorChain.Callback callback) {
         if (message.apiKey() == ApiKeys.PRODUCE.id) {
             String payload = extractValue(message);
             if (payload != null && !isValidJson(payload)) {
-                System.out.println("[DATAQUALITY] Invalid JSON blocked: " + payload);
+                logger.warn("[DATAQUALITY] Invalid JSON blocked from {}: {}", ctx.channel().remoteAddress(), payload);
                 callback.block();
                 return;
             }
@@ -23,28 +28,22 @@ public class JsonValidationInterceptor implements KafkaInterceptor {
     }
 
     private String extractValue(KafkaMessage message) {
-        ByteBuf buf = message.payload();
-        int readerIndex = buf.readerIndex();
         try {
-            buf.readShort(); buf.readShort(); buf.readInt();
-            short clIdLen = buf.readShort();
-            if (clIdLen > 0) buf.skipBytes(clIdLen);
-
-            if (message.apiKey() == ApiKeys.PRODUCE.id) {
-                buf.readShort(); buf.readInt(); buf.readInt();
-                short nameLen = buf.readShort();
-                buf.skipBytes(nameLen);
-                buf.readInt();
-                buf.readInt();
-                int msgSetLen = buf.readInt();
-                if (msgSetLen > 0) {
-                    byte[] payload = new byte[buf.readableBytes()];
-                    buf.readBytes(payload);
-                    return new String(payload, StandardCharsets.UTF_8);
+            ProduceRequest produceRequest = (ProduceRequest) AbstractRequest.parseRequest(
+                    ApiKeys.PRODUCE, message.apiVersion(), message.body().nioBuffer()).request;
+            for (org.apache.kafka.common.message.ProduceRequestData.TopicProduceData tpd : produceRequest.data().topicData()) {
+                for (org.apache.kafka.common.message.ProduceRequestData.PartitionProduceData ppd : tpd.partitionData()) {
+                    if (ppd.records() != null && ppd.records() instanceof org.apache.kafka.common.record.Records) {
+                        for (Record record : ((org.apache.kafka.common.record.Records) ppd.records()).records()) {
+                            if (record.hasValue()) {
+                                return StandardCharsets.UTF_8.decode(record.value()).toString();
+                            }
+                        }
+                    }
                 }
             }
-        } catch (Exception e) {} finally {
-            buf.readerIndex(readerIndex);
+        } catch (Exception e) {
+            logger.error("[DATAQUALITY] Failed to parse ProduceRequest: {}", e.getMessage());
         }
         return null;
     }

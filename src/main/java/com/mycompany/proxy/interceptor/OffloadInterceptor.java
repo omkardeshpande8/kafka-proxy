@@ -4,11 +4,14 @@ import com.mycompany.proxy.protocol.KafkaMessage;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.FileOutputStream;
 import java.util.UUID;
 
 public class OffloadInterceptor implements KafkaInterceptor {
+    private static final Logger logger = LoggerFactory.getLogger(OffloadInterceptor.class);
 
     private final int sizeThreshold;
 
@@ -32,13 +35,16 @@ public class OffloadInterceptor implements KafkaInterceptor {
         String path = "/tmp/kafka-offload-" + offloadId;
 
         ByteBuf fullPayload = message.payload();
+        int readerIndex = fullPayload.readerIndex();
         try (FileOutputStream out = new FileOutputStream(path)) {
             byte[] bytes = new byte[fullPayload.readableBytes()];
-            fullPayload.getBytes(0, bytes);
+            fullPayload.getBytes(readerIndex, bytes);
             out.write(bytes);
-            System.out.println("[OFFLOAD] Large payload (" + bytes.length + " bytes) offloaded to: " + path);
+            logger.info("[OFFLOAD] Large payload ({} bytes) offloaded to: {}", bytes.length, path);
+            // NOTE: In a complete implementation, we would rewrite the ProduceRequest
+            // to replace the actual records with an "offload reference" or similar.
         } catch (Exception e) {
-            System.err.println("[OFFLOAD] Failed to offload: " + e.getMessage());
+            logger.error("[OFFLOAD] Failed to offload: {}", e.getMessage());
         }
     }
 }

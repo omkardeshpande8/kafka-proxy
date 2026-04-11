@@ -26,17 +26,18 @@ public class KafkaMessage implements ReferenceCounted {
         }
         this.fullMessage = newFullMessage;
         this.headerSize = newHeaderSize;
+        // Maintain invariant: fullMessage readerIndex is at the start of the body
+        this.fullMessage.readerIndex(newHeaderSize);
     }
 
     public ByteBuf payload() {
-        // Return the full message as a slice starting at 0
-        return fullMessage.slice(0, fullMessage.writerIndex());
+        // Return the full message (header + body)
+        return fullMessage.duplicate().readerIndex(fullMessage.readerIndex() - headerSize);
     }
 
     public ByteBuf body() {
-        // Return the body as a slice
-        int bodyLength = Math.max(0, fullMessage.writerIndex() - headerSize);
-        return fullMessage.slice(headerSize, bodyLength);
+        // Return the body only
+        return fullMessage.slice();
     }
 
     public int headerSize() {

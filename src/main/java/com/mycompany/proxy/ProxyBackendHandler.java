@@ -12,11 +12,13 @@ public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
     private final ProxyFrontendHandler frontendHandler;
     private final ChannelHandlerContext frontendCtx;
     private final KafkaInterceptorChain interceptorChain;
+    private final KafkaProxy.BackendTarget target;
 
-    public ProxyBackendHandler(ProxyFrontendHandler frontendHandler, ChannelHandlerContext frontendCtx, KafkaInterceptorChain interceptorChain) {
+    public ProxyBackendHandler(ProxyFrontendHandler frontendHandler, ChannelHandlerContext frontendCtx, KafkaInterceptorChain interceptorChain, KafkaProxy.BackendTarget target) {
         this.frontendHandler = frontendHandler;
         this.frontendCtx = frontendCtx;
         this.interceptorChain = interceptorChain;
+        this.target = target;
     }
 
     @Override
@@ -27,7 +29,7 @@ public class ProxyBackendHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(final ChannelHandlerContext ctx, Object msg) {
         interceptorChain.onResponse(frontendCtx, msg);
-        frontendHandler.handleBackendResponse(frontendCtx, msg);
+        frontendHandler.handleBackendResponse(frontendCtx, msg, target);
         ctx.read();
     }
 
