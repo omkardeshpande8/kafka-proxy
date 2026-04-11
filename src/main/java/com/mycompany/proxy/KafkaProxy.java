@@ -24,8 +24,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class KafkaProxy {
+    private static final Logger logger = LoggerFactory.getLogger(KafkaProxy.class);
 
     static final class BackendTarget {
         private final String host;
@@ -54,6 +57,7 @@ public class KafkaProxy {
     private final KafkaInterceptorChain interceptorChain;
     private final SslContext frontendSslContext;
     private final SslContext backendSslContext;
+    private BackendPoolManager poolManager;
     private final Map<String, BackendTarget> backends = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<TopicRoutingRule> topicRoutingRules = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<GroupRoutingRule> groupRoutingRules = new CopyOnWriteArrayList<>();
@@ -86,12 +90,12 @@ public class KafkaProxy {
     }
 
     public synchronized void failover(String newHost, int newPort) {
-        System.out.println("[FAILOVER] Switching default backend to " + newHost + ":" + newPort);
+        logger.info("[FAILOVER] Switching default backend to {}:{}", newHost, newPort);
         registerBackend(defaultBackendName, newHost, newPort);
     }
 
     public synchronized void failoverBackend(String backendName, String newHost, int newPort) {
-        System.out.println("[FAILOVER] Switching backend " + backendName + " to " + newHost + ":" + newPort);
+        logger.info("[FAILOVER] Switching backend {} to {}:{}", backendName, newHost, newPort);
         registerBackend(backendName, newHost, newPort);
     }
 
@@ -110,13 +114,13 @@ public class KafkaProxy {
         for (TopicRoutingRule rule : topicRoutingRules) {
             if (rule.rawPattern().equals(topicRegex)) {
                 rule.setBackendName(backendName);
-                System.out.println("[ROUTING] Updated topic route " + topicRegex + " -> " + backendName);
+                logger.info("[ROUTING] Updated topic route {} -> {}", topicRegex, backendName);
                 return;
             }
         }
 
         topicRoutingRules.add(new TopicRoutingRule(topicRegex, backendName));
-        System.out.println("[ROUTING] Added topic route " + topicRegex + " -> " + backendName);
+        logger.info("[ROUTING] Added topic route {} -> {}", topicRegex, backendName);
     }
 
     public synchronized void addOrUpdateGroupRoute(String groupRegex, String backendName) {
@@ -127,13 +131,13 @@ public class KafkaProxy {
         for (GroupRoutingRule rule : groupRoutingRules) {
             if (rule.rawPattern().equals(groupRegex)) {
                 rule.setBackendName(backendName);
-                System.out.println("[ROUTING] Updated group route " + groupRegex + " -> " + backendName);
+                logger.info("[ROUTING] Updated group route {} -> {}", groupRegex, backendName);
                 return;
             }
         }
 
         groupRoutingRules.add(new GroupRoutingRule(groupRegex, backendName));
-        System.out.println("[ROUTING] Added group route " + groupRegex + " -> " + backendName);
+        logger.info("[ROUTING] Added group route {} -> {}", groupRegex, backendName);
     }
 
     public synchronized void clearTopicRoutes() {
@@ -184,11 +188,11 @@ public class KafkaProxy {
 
     public void run() throws Exception {
         startHealthCheckServer();
-        System.out.println(
-                "Starting Kafka Proxy on port " + localPort + " with default backend " + resolveBackend(null, null));
+        logger.info("Starting Kafka Proxy on port {} with default backend {}", localPort, resolveBackend(null, null));
 
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
         EventLoopGroup workerGroup = new NioEventLoopGroup();
+        this.poolManager = new BackendPoolManager(workerGroup, backendSslContext, interceptorChain);
         try {
             ServerBootstrap b = new ServerBootstrap();
             b.group(bossGroup, workerGroup)
@@ -202,7 +206,7 @@ public class KafkaProxy {
                             ch.pipeline().addLast("frameDecoder", new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 4));
                             ch.pipeline().addLast("frameEncoder", new LengthFieldPrepender(4));
                             ch.pipeline().addLast("protocolHandler", new KafkaProtocolHandler());
-                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(KafkaProxy.this, interceptorChain, backendSslContext));
+                            ch.pipeline().addLast("frontendHandler", new ProxyFrontendHandler(KafkaProxy.this, interceptorChain, backendSslContext, poolManager));
                         }
                     })
                     .childOption(ChannelOption.AUTO_READ, false)
@@ -232,11 +236,21 @@ public class KafkaProxy {
                     }
                 }
             });
+            server.createContext("/metrics", new HttpHandler() {
+                @Override
+                public void handle(HttpExchange exchange) throws IOException {
+                    String response = MetricsRegistry.toPrometheus();
+                    exchange.sendResponseHeaders(200, response.length());
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                }
+            });
             server.setExecutor(null);
             server.start();
-            System.out.println("[HEALTH] Health check server started on port " + healthPort);
+            logger.info("[HEALTH] Health check server started on port {}", healthPort);
         } catch (Exception e) {
-            System.err.println("[HEALTH] Failed to start health check server: " + e.getMessage());
+            logger.error("[HEALTH] Failed to start health check server: {}", e.getMessage());
         }
     }
 

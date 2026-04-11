@@ -1,5 +1,6 @@
 package com.mycompany.proxy.interceptor;
 
+import com.mycompany.proxy.ProxyFrontendHandler;
 import com.mycompany.proxy.protocol.KafkaMessage;
 import com.mycompany.proxy.protocol.TopicExtractor;
 import io.netty.channel.ChannelHandlerContext;
@@ -101,17 +102,22 @@ public class AuthorizationInterceptor implements KafkaInterceptor {
             return null;
         }
 
-        SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
-        if (sslHandler == null) {
-            return null;
+        // Check if principal was extracted from SASL
+        String principal = ctx.channel().attr(ProxyFrontendHandler.PRINCIPAL_KEY).get();
+        if (principal != null) {
+            return principal;
         }
 
-        try {
-            Principal peer = sslHandler.engine().getSession().getPeerPrincipal();
-            return peer != null ? peer.getName() : null;
-        } catch (Exception ignored) {
-            return null;
+        // Fallback to TLS principal
+        SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
+        if (sslHandler != null) {
+            try {
+                Principal peer = sslHandler.engine().getSession().getPeerPrincipal();
+                return peer != null ? peer.getName() : null;
+            } catch (Exception ignored) {}
         }
+
+        return null;
     }
 
     public static AuthorizationInterceptor fromConfig(String defaultAction, String rulesConfig) {

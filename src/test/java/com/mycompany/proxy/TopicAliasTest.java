@@ -21,7 +21,7 @@ public class TopicAliasTest {
         int backendPort = 11099;
         int proxyPort = 11098;
         String virtualTopic = "virtual-topic";
-        String physicalTopic = "physical-topi"; // Must be same length for in-place
+        String physicalTopic = "physical-topic-long";
 
         TopicAliasInterceptor aliaser = new TopicAliasInterceptor();
         aliaser.addAlias(virtualTopic, physicalTopic);
@@ -52,14 +52,16 @@ public class TopicAliasTest {
                 // Read RequestHeader to advance position correctly
                 org.apache.kafka.common.requests.RequestHeader header = org.apache.kafka.common.requests.RequestHeader.parse(b);
 
-                // Body: acks(2), timeout(4), topicsLen(4)
-                b.getShort(); b.getInt(); b.getInt();
-
-                // Topic name
-                short nameLen = b.getShort();
-                byte[] nameBytes = new byte[nameLen];
-                b.get(nameBytes);
-                receivedTopic.set(new String(nameBytes));
+                // For Produce v2: acks(2), timeout(4), topics_count(4)
+                b.getShort(); // acks
+                b.getInt(); // timeout
+                int topicsCount = b.getInt();
+                if (topicsCount > 0) {
+                    short nameLen = b.getShort();
+                    byte[] nameBytes = new byte[nameLen];
+                    b.get(nameBytes);
+                    receivedTopic.set(new String(nameBytes));
+                }
 
             } catch (Exception e) {
                 e.printStackTrace();

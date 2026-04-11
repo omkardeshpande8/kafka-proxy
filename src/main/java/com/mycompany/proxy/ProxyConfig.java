@@ -2,20 +2,28 @@ package com.mycompany.proxy;
 
 import com.mycompany.proxy.interceptor.*;
 import com.mycompany.proxy.security.ProxySecurityConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.FileInputStream;
 import java.util.Properties;
 
 public class ProxyConfig {
+    private static final Logger logger = LoggerFactory.getLogger(ProxyConfig.class);
+
     public static KafkaInterceptorChain loadInterceptors(String configPath) {
         KafkaInterceptorChain chain = new KafkaInterceptorChain();
         Properties props = loadProperties(configPath);
         try {
-            if (Boolean.parseBoolean(props.getProperty("interceptor.audit.enabled", "false"))) {
-                chain.addInterceptor(new AuditInterceptor());
-                System.out.println("Audit Interceptor enabled");
+            // Priority 1: Auth
+            if (Boolean.parseBoolean(props.getProperty("interceptor.authz.enabled", "false"))) {
+                String defaultAction = props.getProperty("interceptor.authz.default_action", "allow");
+                String rules = props.getProperty("interceptor.authz.rules", "");
+                chain.addInterceptor(AuthorizationInterceptor.fromConfig(defaultAction, rules));
+                logger.info("Authorization Interceptor enabled (defaultAction={})", defaultAction);
             }
 
+            // Priority 2: Guardrails
             String blockedTopics = props.getProperty("interceptor.guardrail.blocked_topics");
             if (blockedTopics != null && !blockedTopics.isEmpty()) {
                 TopicGuardrailInterceptor guardrail = new TopicGuardrailInterceptor();
@@ -23,7 +31,13 @@ public class ProxyConfig {
                     guardrail.blockTopic(topic.trim());
                 }
                 chain.addInterceptor(guardrail);
-                System.out.println("Topic Guardrail enabled with topics: " + blockedTopics);
+                logger.info("Topic Guardrail enabled with topics: {}", blockedTopics);
+            }
+
+            // Other interceptors
+            if (Boolean.parseBoolean(props.getProperty("interceptor.audit.enabled", "false"))) {
+                chain.addInterceptor(new AuditInterceptor());
+                logger.info("Audit Interceptor enabled");
             }
 
             String virtualTopic = props.getProperty("interceptor.alias.virtual");
@@ -32,25 +46,25 @@ public class ProxyConfig {
                 TopicAliasInterceptor aliaser = new TopicAliasInterceptor();
                 aliaser.addAlias(virtualTopic, physicalTopic);
                 chain.addInterceptor(aliaser);
-                System.out.println("Topic Aliasing enabled: " + virtualTopic + " -> " + physicalTopic);
+                logger.info("Topic Aliasing enabled: {} -> {}", virtualTopic, physicalTopic);
             }
 
             int chaosLatency = Integer.parseInt(props.getProperty("interceptor.chaos.latency", "0"));
             double chaosErrorRate = Double.parseDouble(props.getProperty("interceptor.chaos.error_rate", "0"));
             if (chaosLatency > 0 || chaosErrorRate > 0) {
                 chain.addInterceptor(new ChaosInterceptor(chaosLatency, chaosErrorRate));
-                System.out.println("Chaos Interceptor enabled (latency=" + chaosLatency + "ms, errorRate=" + chaosErrorRate + ")");
+                logger.info("Chaos Interceptor enabled (latency={}ms, errorRate={})", chaosLatency, chaosErrorRate);
             }
 
             long rateLimitMaxBps = Long.parseLong(props.getProperty("interceptor.ratelimit.max_bps", "0"));
             if (rateLimitMaxBps > 0) {
                 chain.addInterceptor(new RateLimitInterceptor(rateLimitMaxBps));
-                System.out.println("Rate Limit Interceptor enabled (maxBps=" + rateLimitMaxBps + ")");
+                logger.info("Rate Limit Interceptor enabled (maxBps={})", rateLimitMaxBps);
             }
 
             if (Boolean.parseBoolean(props.getProperty("interceptor.dataquality.json_validation", "false"))) {
                 chain.addInterceptor(new JsonValidationInterceptor());
-                System.out.println("JSON Validation Interceptor enabled");
+                logger.info("JSON Validation Interceptor enabled");
             }
 
             String maskingFields = props.getProperty("interceptor.masking.fields");
@@ -60,35 +74,28 @@ public class ProxyConfig {
                     masker.addMaskedField(field.trim());
                 }
                 chain.addInterceptor(masker);
-                System.out.println("Field Masking enabled for fields: " + maskingFields);
+                logger.info("Field Masking enabled for fields: {}", maskingFields);
             }
 
             int offloadThreshold = Integer.parseInt(props.getProperty("interceptor.offload.threshold_bytes", "0"));
             if (offloadThreshold > 0) {
                 chain.addInterceptor(new OffloadInterceptor(offloadThreshold));
-                System.out.println("Payload Offloading enabled (threshold=" + offloadThreshold + " bytes)");
+                logger.info("Payload Offloading enabled (threshold={} bytes)", offloadThreshold);
             }
 
             if (Boolean.parseBoolean(props.getProperty("interceptor.cache.enabled", "false"))) {
                 chain.addInterceptor(new CacheInterceptor());
-                System.out.println("Fetch Caching enabled");
+                logger.info("Fetch Caching enabled");
             }
 
             String sqlFilter = props.getProperty("interceptor.sql.filter");
             if (sqlFilter != null && !sqlFilter.isEmpty()) {
                 chain.addInterceptor(new VirtualSqlInterceptor(sqlFilter));
-                System.out.println("Virtual SQL Filter enabled: " + sqlFilter);
-            }
-
-            if (Boolean.parseBoolean(props.getProperty("interceptor.authz.enabled", "false"))) {
-                String defaultAction = props.getProperty("interceptor.authz.default_action", "allow");
-                String rules = props.getProperty("interceptor.authz.rules", "");
-                chain.addInterceptor(AuthorizationInterceptor.fromConfig(defaultAction, rules));
-                System.out.println("Authorization Interceptor enabled (defaultAction=" + defaultAction + ")");
+                logger.info("Virtual SQL Filter enabled: {}", sqlFilter);
             }
 
         } catch (Exception e) {
-            System.err.println("Could not parse interceptor config from " + configPath + ", using defaults. " + e.getMessage());
+            logger.error("Could not parse interceptor config from {}, using defaults. {}", configPath, e.getMessage());
         }
         return chain;
     }
@@ -117,14 +124,14 @@ public class ProxyConfig {
                 }
 
                 proxy.registerBackend(name, host.trim(), Integer.parseInt(port.trim()));
-                System.out.println("[ROUTING] Registered backend " + name + " -> " + host + ":" + port);
+                logger.info("[ROUTING] Registered backend {} -> {}:{}", name, host, port);
             }
         }
 
         String defaultBackend = props.getProperty("routing.default_backend", "").trim();
         if (!defaultBackend.isEmpty()) {
             proxy.setDefaultBackend(defaultBackend);
-            System.out.println("[ROUTING] Default backend set to " + defaultBackend);
+            logger.info("[ROUTING] Default backend set to {}", defaultBackend);
         }
 
         String routes = props.getProperty("routing.topic_routes", "").trim();

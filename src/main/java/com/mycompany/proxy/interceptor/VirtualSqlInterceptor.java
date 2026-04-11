@@ -1,13 +1,18 @@
 package com.mycompany.proxy.interceptor;
 
 import com.mycompany.proxy.protocol.KafkaMessage;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.requests.AbstractRequest;
+import org.apache.kafka.common.requests.ProduceRequest;
+import org.apache.kafka.common.record.Record;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 
 public class VirtualSqlInterceptor implements KafkaInterceptor {
+    private static final Logger logger = LoggerFactory.getLogger(VirtualSqlInterceptor.class);
 
     private final String filterValue;
 
@@ -20,9 +25,7 @@ public class VirtualSqlInterceptor implements KafkaInterceptor {
         if (message.apiKey() == ApiKeys.PRODUCE.id) {
             String payload = extractValue(message);
             if (payload != null && !payload.contains(filterValue)) {
-                System.out.println("[SQLFILTER] Dropping record as it doesn't match criteria: " + filterValue);
-                // In a real Virtual SQL implementation, we would filter specific records
-                // from the RecordBatch. For this POC, we drop the whole request if no match.
+                logger.info("[SQLFILTER] Dropping record as it doesn't match criteria: {}", filterValue);
                 callback.block();
                 return;
             }
@@ -31,23 +34,22 @@ public class VirtualSqlInterceptor implements KafkaInterceptor {
     }
 
     private String extractValue(KafkaMessage message) {
-        ByteBuf buf = message.body();
-        int readerIndex = buf.readerIndex();
         try {
-            if (message.apiKey() == ApiKeys.PRODUCE.id) {
-                // Simplified extraction for POC
-                buf.readShort(); buf.readInt(); buf.readInt();
-                short nameLen = buf.readShort(); buf.skipBytes(nameLen);
-                buf.readInt(); buf.readInt();
-                int msgSetLen = buf.readInt();
-                if (msgSetLen > 0) {
-                    byte[] payload = new byte[buf.readableBytes()];
-                    buf.readBytes(payload);
-                    return new String(payload, StandardCharsets.UTF_8);
+            ProduceRequest produceRequest = (ProduceRequest) AbstractRequest.parseRequest(
+                    ApiKeys.PRODUCE, message.apiVersion(), message.body().nioBuffer()).request;
+            for (org.apache.kafka.common.message.ProduceRequestData.TopicProduceData tpd : produceRequest.data().topicData()) {
+                for (org.apache.kafka.common.message.ProduceRequestData.PartitionProduceData ppd : tpd.partitionData()) {
+                    if (ppd.records() != null && ppd.records() instanceof org.apache.kafka.common.record.Records) {
+                        for (Record record : ((org.apache.kafka.common.record.Records) ppd.records()).records()) {
+                            if (record.hasValue()) {
+                                return StandardCharsets.UTF_8.decode(record.value()).toString();
+                            }
+                        }
+                    }
                 }
             }
-        } catch (Exception e) {} finally {
-            buf.readerIndex(readerIndex);
+        } catch (Exception e) {
+            logger.error("[SQLFILTER] Failed to parse ProduceRequest: {}", e.getMessage());
         }
         return null;
     }
